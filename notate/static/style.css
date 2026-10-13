@@ -232,3 +232,9 @@
 .notepad-notice { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 #saved-pad-version { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 .md-table-preview { max-width: 100%; }
+
+/* Inline answer shortcut: bold label, italic body text, theme-aware blue. */
+:root { --inline-answer-color: #234f87; }
+:root[data-theme="dark"] { --inline-answer-color: #9fc9f3; }
+:is(.markdown-editor, .document-content, .markdown-body) .md-answer-label { font-weight: 700; font-style: normal; }
+:root :is(.markdown-editor, .document-content, .markdown-body) em.md-answer-text { color: var(--inline-answer-color); font-style: italic; font-weight: 400; font-size: 1em; }

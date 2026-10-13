@@ -180,6 +180,88 @@ def exercise_format_shortcuts(editor, modifier):
     return '**bold** and *italic*\n'
 
 
+def exercise_answer_shortcut(editor, modifier):
+    editor.fill(''); editor.press(modifier+'+e')
+    expect(editor).to_contain_text('**Answ:** * *')
+    editor.page.keyboard.insert_text('A useful finding.')
+    expect(editor.locator('.md-answer-text')).to_contain_text('A useful finding.')
+    editor.press('Enter')
+    expect(editor.locator('.md-answer-label')).to_have_text('Answ:')
+    expect(editor.locator('.md-answer-text')).to_have_text('A useful finding.')
+    editor.press(modifier+'+z'); editor.press(modifier+'+z')
+    redo = modifier+'+Shift+z' if modifier == 'Meta' else modifier+'+y'
+    editor.press(redo); editor.press(redo)
+    expect(editor.locator('.md-answer-text')).to_have_text('A useful finding.')
+    return '**Answ:** *A useful finding.*\n'
+
+
+def assert_answer_style(container, dark=False):
+    label = container.locator('.md-answer-label'); answer = container.locator('.md-answer-text')
+    expect(label).to_have_text('Answ:'); expect(answer).to_have_text('A useful finding.')
+    assert int(label.evaluate('(node) => getComputedStyle(node).fontWeight')) >= 700
+    style = answer.evaluate('''node => { const style=getComputedStyle(node); return {
+        color:style.color,weight:style.fontWeight,italic:style.fontStyle,size:style.fontSize,
+        bodySize:getComputedStyle(node.closest('.cm-line,p,td') || node.parentElement).fontSize}; }''')
+    assert style['weight'] == '400' and style['italic'] == 'italic' and style['size'] == style['bodySize'], style
+    assert style['color'] == ('rgb(159, 201, 243)' if dark else 'rgb(35, 79, 135)'), style
+
+
+def check_inline_answer_shortcut(page, url, modifier):
+    if page.locator('html').get_attribute('data-theme') == 'dark': page.locator('#theme-toggle').click()
+    title = f'{modifier} inline answer checks'
+    page.locator('#new-note').click(); page.locator('#note-title').fill(title); page.locator('#modal-submit').click()
+    editor = page.locator('#note-editor .cm-content')
+    # Selected words become the answer without losing the original text.
+    editor.fill('A useful finding.'); editor.press(modifier+'+a'); editor.press(modifier+'+e')
+    expect(editor).to_contain_text('**Answ:** *A useful finding.*')
+    editor.press('Enter')
+    assert_answer_style(editor)
+    editor.press(modifier+'+z'); editor.press(modifier+'+z')
+    expect(editor).to_have_text('A useful finding.')
+    redo = modifier+'+Shift+z' if modifier == 'Meta' else modifier+'+y'
+    editor.press(redo); editor.press(redo)
+    assert_answer_style(editor)
+    page.locator('#read-mode').click(); assert_answer_style(page.locator('#note-content'))
+    note_id = page.locator('.file-card.active').get_attribute('data-id')
+    assert httpx.get(url+f'/api/items/{note_id}').json()['markdown'] == '**Answ:** *A useful finding.*\n'
+    page.locator('#theme-toggle').click(); assert_answer_style(page.locator('#note-content'),dark=True)
+    page.locator('#edit-mode').click(); assert_answer_style(page.locator('#note-editor .cm-content'),dark=True)
+    page.locator('#read-mode').click()
+    select_text(page,'#note-content','A useful finding.'); page.locator('[data-annotate="comment"]').click()
+    comment = page.locator('#comment-body .cm-content')
+    exercise_answer_shortcut(comment,modifier); assert_answer_style(comment,dark=True)
+    comment.press(modifier+'+Enter')
+    assert_answer_style(page.locator('#annotations-list .comment-text'),dark=True)
+    reply = page.locator('.reply-form .cm-content')
+    exercise_answer_shortcut(reply,modifier); assert_answer_style(reply,dark=True)
+    reply.press(modifier+'+Enter')
+    expect(page.locator('#annotations-list .comment-text')).to_have_count(2)
+    click_mark(page,'comment')
+    popup = page.locator('.popup-reply-form .cm-content')
+    exercise_answer_shortcut(popup,modifier); assert_answer_style(popup,dark=True)
+    popup.press(modifier+'+Enter')
+    expect(page.locator('.popup-comment-text')).to_have_count(3)
+    page.locator('.popup-close').click()
+    if modifier == 'Meta':
+        page.locator('.annotation-copy').click()
+        page.wait_for_function("window.__copiedAnnotationText?.includes('> **Answ:** *A useful finding.*')")
+    page.locator('[data-filter="notepad"]').click()
+    pad = page.locator('#notepad-editor .cm-content')
+    source = exercise_answer_shortcut(pad,modifier); assert_answer_style(pad,dark=True)
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    assert httpx.get(url+f'/api/items/{note_id}/notepad').json()['markdown'] == source
+    page.screenshot(path=str(ARTIFACTS/f'inline-answer-{modifier.lower()}-dark.png'),full_page=True)
+    page.locator('#theme-toggle').click(); assert_answer_style(pad)
+    page.screenshot(path=str(ARTIFACTS/f'inline-answer-{modifier.lower()}-light.png'),full_page=True)
+    page.reload(); assert_answer_style(page.locator('#note-content'))
+    assert_answer_style(page.locator('#annotations-list .comment-text').first)
+    page.locator('[data-filter="notepad"]').click()
+    page.locator('#notepad-editor .cm-content').press('ArrowDown')
+    assert_answer_style(page.locator('#notepad-editor .cm-content'))
+    page.locator('.file-card').filter(has_text='Welcome to Notate').click()
+    print(f'{modifier} E inserts inline answers in every editor; selected text, undo/redo, body typography, day/night colors, saved rendering, copy, and reopen work.',flush=True)
+
+
 def check_comments_notepad_and_shortcuts(page, url, modifier, label):
     page.locator('#new-note').click(); page.locator('#note-title').fill(label); page.locator('#modal-submit').click()
     source = exercise_format_shortcuts(page.locator('#note-editor .cm-content'),modifier)
@@ -319,11 +401,13 @@ def run(additional_pdf=None):
                 print('Workspace loads and connects to live sync.',flush=True)
                 check_markdown_editor(page,url)
                 check_comments_notepad_and_shortcuts(page,url,'Meta','Mac shortcut checks')
+                check_inline_answer_shortcut(page,url,'Meta')
                 linux = browser.new_context(viewport={'width':1512,'height':982})
                 linux.add_init_script("Object.defineProperty(navigator,'platform',{configurable:true,get:()=> 'Linux x86_64'})")
                 linux_page = linux.new_page(); linux_page.goto(url)
                 linux_page.locator('.file-card').filter(has_text='Welcome to Notate').click()
                 check_comments_notepad_and_shortcuts(linux_page,url,'Control','Linux shortcut checks')
+                check_inline_answer_shortcut(linux_page,url,'Control')
                 linux.close()
                 check_notepad_deletion(page,url)
 

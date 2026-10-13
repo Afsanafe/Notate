@@ -144,9 +144,29 @@ def run():
                 window.evaluate_js("document.querySelector('#read-mode').click()")
                 wait_for("document.querySelector('#note-content h1')?.textContent === 'Desktop heading'")
                 wait_for("document.querySelectorAll('#note-content th').length === 2")
+                answer_note = httpx.post(url+'/api/notes',json={'title':'Native inline answer','markdown':''}).json()
+                answer_id = answer_note['id']
+                wait_for(f"!!document.querySelector('.file-card[data-id=\"{answer_id}\"]')")
+                window.evaluate_js(f"document.querySelector('.file-card[data-id=\"{answer_id}\"]').click()")
+                wait_for("document.querySelector('#document-title').textContent === 'Native inline answer'")
+                window.evaluate_js("document.querySelector('#edit-mode').click()")
+                wait_for("!!document.querySelector('#note-editor .cm-content')")
+                window.evaluate_js("document.querySelector('#note-editor .cm-content').focus(); document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'e',code:'KeyE',metaKey:true,bubbles:true,cancelable:true})); document.execCommand('insertText',false,'A useful finding.')")
+                wait_for("document.querySelector('#note-editor .md-answer-text')?.textContent.includes('A useful finding.')")
+                window.evaluate_js("document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,cancelable:true}))")
+                wait_for("document.querySelector('#note-editor .md-answer-label')?.textContent === 'Answ:'")
+                wait_for("document.querySelector('#save-state').textContent === 'Saved locally'")
+                assert httpx.get(url+f'/api/items/{answer_id}').json()['markdown'] == '**Answ:** *A useful finding.*\n'
+                window.evaluate_js("document.querySelector('#read-mode').click()")
+                wait_for("document.querySelector('#note-content .md-answer-text')?.textContent === 'A useful finding.'")
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-answer-text')).color") == 'rgb(159, 201, 243)'
+                window.evaluate_js("document.querySelector('#theme-toggle').click()")
+                wait_for("document.documentElement.dataset.theme === 'light'")
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-answer-text')).color") == 'rgb(35, 79, 135)'
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-answer-text')).fontWeight") == '400'
                 results.update(status='passed',native_engine='macOS WKWebView',pdf_text_selection=True,comment_saved_in_shared_backend=True,
                                dark_mode=True,contained_selection=True,passage_popup_reply=True,popup_toggle=True,copy_markdown=True,markdown_preview=True,answer_types=True,
-                               note_markdown_live_preview=True,note_tables=True,comment_live_editing=True,command_shortcuts=True,document_notepad=True)
+                               note_markdown_live_preview=True,note_tables=True,comment_live_editing=True,command_shortcuts=True,document_notepad=True,inline_answer_shortcut=True)
                 print('Native live Markdown comments, Command B/I shortcuts, document Notepad, note editing, tables, annotations, and blue answers passed.',flush=True)
             except BaseException as error:
                 results.update(status='failed',error=str(error))

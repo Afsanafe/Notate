@@ -13,6 +13,7 @@ import bleach
 import markdown
 from markdown.extensions import Extension
 from markdown.inlinepatterns import SimpleTagInlineProcessor
+from markdown.treeprocessors import Treeprocessor
 from markdownify import MarkdownConverter
 from docx import Document
 from docx.oxml.ns import qn
@@ -27,8 +28,15 @@ ALLOWED_TAGS = ["p", "br", "strong", "em", "b", "i", "u", "s", "h1", "h2", "h3",
                 "tbody", "tr", "th", "td"]
 
 
+def note_attribute(tag, name, value):
+    if tag == 'a' and name in {'href', 'title'}:
+        return True
+    return name == 'class' and ((tag == 'strong' and value == 'md-answer-label')
+                                or (tag == 'em' and value == 'md-answer-text'))
+
+
 def clean_note(value):
-    return bleach.clean(value, tags=ALLOWED_TAGS, attributes={"a": ["href", "title"]},
+    return bleach.clean(value, tags=ALLOWED_TAGS, attributes=note_attribute,
                         protocols=["http", "https", "mailto"], strip=True)
 
 
@@ -37,16 +45,34 @@ class StrikeExtension(Extension):
         md.inlinePatterns.register(SimpleTagInlineProcessor(r'(~~)(.+?)~~', 's'), 'strikethrough', 175)
 
 
+class InlineAnswerProcessor(Treeprocessor):
+    def run(self, root):
+        # The shortcut uses ordinary Markdown: **Answ:** *answer*. Add only
+        # presentation classes; source text and annotation offsets stay intact.
+        for parent in root.iter():
+            children = list(parent)
+            for label, answer in zip(children, children[1:]):
+                if (label.tag == 'strong' and ''.join(label.itertext()) == 'Answ:'
+                        and not (label.tail or '').strip() and answer.tag == 'em'):
+                    label.set('class', 'md-answer-label')
+                    answer.set('class', 'md-answer-text')
+
+
+class InlineAnswerExtension(Extension):
+    def extendMarkdown(self, md):
+        md.treeprocessors.register(InlineAnswerProcessor(md), 'inline_answer', 5)
+
+
 @lru_cache(maxsize=256)
 def render_comment_markdown(value):
-    rendered = markdown.markdown(value, extensions=['fenced_code', 'tables', 'sane_lists', 'nl2br', StrikeExtension()])
+    rendered = markdown.markdown(value, extensions=['fenced_code', 'tables', 'sane_lists', 'nl2br', StrikeExtension(), InlineAnswerExtension()])
     return clean_note(rendered)
 
 
 def render_note_markdown(value):
     # Large notes do not belong in the comment preview's process-wide cache.
     return clean_note(markdown.markdown(value, extensions=[
-        'fenced_code', 'tables', 'sane_lists', 'nl2br', StrikeExtension()]))
+        'fenced_code', 'tables', 'sane_lists', 'nl2br', StrikeExtension(), InlineAnswerExtension()]))
 
 
 class NoteMarkdownConverter(MarkdownConverter):
@@ -173,7 +199,7 @@ def prepare_document(path, original_name):
             value = path.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError as exc:
             raise ValueError("Text files must use UTF-8 encoding.") from exc
-        content = clean_note(markdown.markdown(value, extensions=["tables", "fenced_code"])) if extension != ".txt" else "".join(
+        content = clean_note(markdown.markdown(value, extensions=["tables", "fenced_code", InlineAnswerExtension()])) if extension != ".txt" else "".join(
             f"<p>{html.escape(line) or '<br>'}</p>" for line in value.splitlines())
         return {"kind": "document", "content": content, "pdf_path": None, "page_count": None}
     raise ValueError("Supported files: PDF, DOCX, TXT, MD; DOC, ODT, and RTF with LibreOffice.")

@@ -2,9 +2,9 @@
 // is needed to run Notate; npm is only used when developing the editor.
 import {EditorState, EditorSelection, StateField, StateEffect, Transaction, Prec} from '@codemirror/state';
 import {EditorView, Decoration, WidgetType, keymap, drawSelection, dropCursor, placeholder} from '@codemirror/view';
-import {defaultKeymap, history, historyKeymap, indentWithTab, isolateHistory} from '@codemirror/commands';
+import {defaultKeymap, history, historyKeymap, indentWithTab, isolateHistory, insertNewline} from '@codemirror/commands';
 import {syntaxTree} from '@codemirror/language';
-import {markdown} from '@codemirror/lang-markdown';
+import {markdown, insertNewlineContinueMarkup} from '@codemirror/lang-markdown';
 import {Table, Strikethrough} from '@lezer/markdown';
 import MarkdownIt from 'markdown-it';
 
@@ -18,6 +18,22 @@ const previewEnabled = StateField.define({
   update: (value, transaction) => transaction.effects.find(effect => effect.is(changePreview))?.value ?? value
 });
 
+function styleInlineAnswers(container) {
+  container.querySelectorAll('strong').forEach(label => {
+    if (label.textContent !== 'Answ:') return;
+    let sibling = label.nextSibling;
+    while (sibling?.nodeType === Node.TEXT_NODE && !sibling.textContent.trim()) sibling = sibling.nextSibling;
+    if (sibling?.nodeName === 'EM') { label.classList.add('md-answer-label'); sibling.classList.add('md-answer-text'); }
+  });
+}
+function isAnswerLabel(state, node) {
+  return node?.name === 'StrongEmphasis' && /^(?:\*\*Answ:\*\*|__Answ:__)$/.test(state.doc.sliceString(node.from,node.to));
+}
+function isAnswerText(state, node) {
+  const label = node.node.prevSibling;
+  return node.name === 'Emphasis' && isAnswerLabel(state,label) && /^[ \t]*$/.test(state.doc.sliceString(label.to,node.from));
+}
+
 class Bullet extends WidgetType {
   toDOM() { const span = document.createElement('span'); span.className = 'md-bullet'; span.textContent = '•'; return span; }
 }
@@ -29,6 +45,7 @@ class TablePreview extends WidgetType {
     const container = document.createElement('div'); container.className = 'md-table-preview';
     // markdown-it has HTML disabled and rejects unsafe link protocols.
     container.innerHTML = renderer.render(this.source);
+    styleInlineAnswers(container);
     container.setAttribute('aria-label', 'Markdown table. Click a cell to edit.');
     container.querySelectorAll('th,td').forEach((cell, index) => {
       cell.title = 'Click to edit this cell’s Markdown';
@@ -66,6 +83,7 @@ function liveDecorations(state) {
   };
   syntaxTree(state).iterate({enter(node) {
     const {name, from, to} = node;
+    const answerLabel = isAnswerLabel(state,node), answerText = isAnswerText(state,node);
     if (name === 'Table' && active(from, to)) {
       for (let number = state.doc.lineAt(from).number; number <= state.doc.lineAt(to).number; number++) lineStyle(state.doc.line(number).from, 'md-table-source');
     }
@@ -110,13 +128,17 @@ function liveDecorations(state) {
     if (name === 'FencedCode' || name === 'CodeBlock') {
       for (let number = state.doc.lineAt(from).number; number <= state.doc.lineAt(to).number; number++) lineStyle(state.doc.line(number).from, 'md-code-block');
     }
+    // Answer text keeps its color and emphasis while the current line exposes
+    // Markdown syntax for editing, as well as after that line is completed.
+    if (answerLabel) mark(from,to,'md-strong md-answer-label','strong');
+    if (answerText) mark(from,to,'md-emphasis md-answer-text','em');
     if (active(from, to)) return;
     if (name === 'HeaderMark' || name === 'QuoteMark') {
       hide(from, to + (state.doc.sliceString(to, to + 1) === ' ' ? 1 : 0));
     } else if (name === 'ListMark' && /^[*+-]$/.test(state.doc.sliceString(from, to))) {
       ranges.push(Decoration.replace({widget: new Bullet()}).range(from, to));
-    } else if (name === 'StrongEmphasis') mark(from, to, 'md-strong', 'strong');
-    else if (name === 'Emphasis') mark(from, to, 'md-emphasis', 'em');
+    } else if (name === 'StrongEmphasis' && !answerLabel) mark(from, to, 'md-strong', 'strong');
+    else if (name === 'Emphasis' && !answerText) mark(from, to, 'md-emphasis', 'em');
     else if (name === 'Strikethrough') mark(from, to, 'md-strike', 's');
     else if (name === 'InlineCode') mark(from, to, 'md-inline-code', 'code');
     else if (name === 'EmphasisMark' || name === 'StrikethroughMark' || name === 'CodeMark') hide(from, to);
@@ -149,6 +171,8 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     Prec.high(keymap.of([
       {key: 'Mod-b', run: () => { format('bold'); return true; }},
       {key: 'Mod-i', run: () => { format('italic'); return true; }},
+      {key: 'Mod-e', run: () => { insertAnswer(); return true; }},
+      {key: 'Enter', run: finishAnswerLine},
       ...(options.onSubmit ? [{key:'Mod-Enter', run: () => { options.onSubmit(); return true; }}] : [])
     ])),
     keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
@@ -181,8 +205,29 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     const insert = lines.join('\n');
     view.dispatch({changes: {from: first.from, to: last.to, insert}, selection: {anchor: first.from + insert.length}, userEvent: 'input', annotations:isolateHistory.of('full')}); view.focus();
   }
+  function insertAnswer() {
+    const {from, to} = view.state.selection.main;
+    const selected = view.state.doc.sliceString(from,to), text = selected || ' ';
+    const prefix = '**Answ:** *';
+    view.dispatch({changes:{from,to,insert:prefix+text+'*'},
+      selection:selected ? {anchor:from+prefix.length+text.length}
+        : EditorSelection.single(from+prefix.length,from+prefix.length+text.length),
+      userEvent:'input',annotations:isolateHistory.of('full')});
+    view.focus();
+  }
+  function finishAnswerLine() {
+    const selection = view.state.selection.main;
+    if (!selection.empty) return false;
+    let node = syntaxTree(view.state).resolveInner(selection.head,-1);
+    while (node && node.name !== 'Emphasis') node = node.parent;
+    if (!node || !isAnswerText(view.state,node) || selection.head !== node.to-1) return false;
+    // Typing at the end of the inserted answer then pressing Enter finishes
+    // its italic span and starts a normal line (including list continuation).
+    view.dispatch({selection:{anchor:node.to}});
+    return insertNewlineContinueMarkup(view) || insertNewline(view);
+  }
   return {
-    view, format,
+    view, format, insertAnswer,
     getSource: () => view.state.doc.toString(),
     setSource(value) {
       if (value === view.state.doc.toString()) return;

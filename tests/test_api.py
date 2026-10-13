@@ -101,6 +101,34 @@ def test_markdown_note_validation_safe_rendering_and_old_draft_conversion(client
     assert client.get(f'/api/items/{note["id"]}').json()['revision'] == 1
 
 
+def test_inline_answer_markdown_is_preserved_in_notes_comments_imports_and_exports(client, app):
+    source = '**Answ:** *Evidence explains this.* and *ordinary italics*.'
+    rendered = client.post('/api/markdown/preview',json={'body':source}).json()['html']
+    assert '<strong class="md-answer-label">Answ:</strong>' in rendered
+    assert '<em class="md-answer-text">Evidence explains this.</em>' in rendered
+    assert '<em>ordinary italics</em>' in rendered
+    note = client.post('/api/notes',json={'title':'Inline answers','markdown':source}).json()
+    assert note['markdown'] == source and note['content'] == rendered
+    thread = text_annotation(client,note['id'],quote='Evidence explains this.',comment=source)
+    assert thread['comments'][0]['body'] == source and thread['comments'][0]['html'] == rendered
+    imported = client.post('/api/import',files={'file':('answer.md',source.encode(),'text/markdown')}).json()
+    assert imported['content'] == rendered
+    with TestClient(create_app(app.state.store.directory)) as restarted:
+        exported = restarted.get(f'/api/items/{note["id"]}/export').json()
+        assert exported['document']['markdown'] == source and exported['document']['content'] == rendered
+        assert exported['annotations'][0]['comments'][0]['html'] == rendered
+
+
+def test_inline_answer_styling_is_scoped_and_preserves_html_sanitization(client):
+    for source in ('**Label:** *ordinary*', '`**Answ:** *code*`', '**Answ:** extra words *ordinary*', '**Answ:**\n\n*another paragraph*'):
+        html = client.post('/api/markdown/preview',json={'body':source}).json()['html']
+        assert 'md-answer-label' not in html and 'md-answer-text' not in html
+    source = '**Answ:** *A [safe link](https://example.com).*\n\n<em class="arbitrary" style="color:red" onclick="alert(1)">unsafe</em><script>alert(1)</script>'
+    html = client.post('/api/markdown/preview',json={'body':source}).json()['html']
+    assert 'md-answer-text' in html and 'href="https://example.com"' in html
+    assert 'arbitrary' not in html and 'style=' not in html and 'onclick=' not in html and '<script' not in html
+
+
 @pytest.mark.parametrize('document_kind', ['note', 'pdf'])
 def test_document_notepad_is_independent_persistent_and_synced(client, app, pdf_bytes, document_kind):
     document = new_note(client) if document_kind == 'note' else client.post('/api/import',files={'file':('reading.pdf',pdf_bytes,'application/pdf')}).json()
