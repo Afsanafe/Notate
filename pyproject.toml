@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "notate-local"
+version = "0.1.0"
+description = "A local desktop and web workspace for reading, notes, and threaded annotations."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "python-multipart>=0.0.20,<1",
+  "pypdf>=5,<7",
+  "python-docx>=1.1,<2",
+  "bleach>=6.2,<7",
+  "markdown>=3.7,<4",
+]
+
+[project.optional-dependencies]
+desktop = ["pywebview>=5.4,<7"]
+dev = ["pytest>=8,<10", "httpx>=0.28,<1", "playwright>=1.50,<2"]
+
+[project.scripts]
+notate = "notate.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["notate*"]
+
+[tool.setuptools.package-data]
+notate = ["static/*", "static/vendor/*", "static/vendor/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
