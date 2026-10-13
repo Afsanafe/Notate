@@ -18,7 +18,8 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__
-from .documents import clean_note, prepare_document, render_comment_markdown
+from .documents import (clean_note, note_html_to_markdown, prepare_document,
+                        render_comment_markdown, render_note_markdown)
 from .storage import Store, identifier, timestamp
 
 
@@ -44,6 +45,7 @@ class NoteInput(BaseModel):
     title: str = Field(default="Untitled note", min_length=1, max_length=250)
     folder_id: str | None = None
     content: str = Field(default="<p><br></p>", max_length=5_000_000)
+    markdown: str | None = Field(default=None, max_length=5_000_000)
 
 
 class ItemUpdate(BaseModel):
@@ -51,6 +53,7 @@ class ItemUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=250)
     folder_id: str | None = None
     content: str | None = Field(default=None, max_length=5_000_000)
+    markdown: str | None = Field(default=None, max_length=5_000_000)
 
 
 class AnnotationInput(BaseModel):
@@ -85,6 +88,10 @@ class CommentTypeInput(BaseModel):
 
 class MarkdownPreviewInput(BaseModel):
     body: str = Field(default='', max_length=20_000)
+
+
+class LegacyNoteInput(BaseModel):
+    content: str = Field(max_length=5_000_000)
 
 
 class SessionInput(BaseModel):
@@ -210,12 +217,22 @@ def create_app(data_dir: str | Path, token: str | None = None):
         title = body.title.strip()
         if not title:
             raise HTTPException(422, "A note needs a title.")
+        if 'markdown' in body.model_fields_set and (body.markdown is None or 'content' in body.model_fields_set):
+            raise HTTPException(422, 'Send Markdown text or legacy HTML content, not both.')
+        source = body.markdown if body.markdown is not None else note_html_to_markdown(body.content)
+        content = render_note_markdown(source) if body.markdown is not None else clean_note(body.content)
         with store.connect() as db:
             folder_exists(db, body.folder_id)
-            db.execute("INSERT INTO items (id,title,kind,folder_id,content,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
-                       (item_id, title, "note", body.folder_id, clean_note(body.content), now, now))
+            db.execute("INSERT INTO items (id,title,kind,folder_id,content,markdown,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                       (item_id, title, "note", body.folder_id, content, source, now, now))
         await hub.publish(request, "workspace")
         return public_item(item_or_404(item_id))
+
+    @app.post('/api/notes/convert')
+    def convert_note_draft(body: LegacyNoteInput):
+        # Recover browser drafts from the old HTML editor without writing them
+        # over a saved note or bypassing its revision check.
+        return {'markdown': note_html_to_markdown(body.content)}
 
     @app.post("/api/import", status_code=201)
     async def import_file(request: Request, file: UploadFile, folder_id: str | None = None):
@@ -281,12 +298,22 @@ def create_app(data_dir: str | Path, token: str | None = None):
             if "folder_id" in fields:
                 folder_exists(db, body.folder_id)
                 updates["folder_id"] = body.folder_id
+            if 'markdown' in fields and 'content' in fields:
+                raise HTTPException(422, 'Send Markdown text or legacy HTML content, not both.')
+            if 'markdown' in fields:
+                if item['kind'] != 'note':
+                    raise HTTPException(422, 'Imported documents are read only. Create a note to write your findings.')
+                if body.markdown is None:
+                    raise HTTPException(422, 'Markdown must be text.')
+                updates['markdown'] = body.markdown
+                updates['content'] = render_note_markdown(body.markdown)
             if "content" in fields:
                 if item["kind"] != "note":
                     raise HTTPException(422, "Imported documents are read only. Create a note to write your findings.")
                 if body.content is None:
                     raise HTTPException(422, "Content must be text.")
                 updates["content"] = clean_note(body.content)
+                updates['markdown'] = note_html_to_markdown(updates['content'])
             assignments = ",".join(f"{key}=?" for key in updates)
             db.execute(f"UPDATE items SET {assignments} WHERE id=?", (*updates.values(), item_id))
         await hub.publish(request, "item", item_id)

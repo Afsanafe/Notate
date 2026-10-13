@@ -4,7 +4,7 @@ A Python desktop and web app for keeping your documents, questions, and discover
 
 ## Run it
 
-Python 3.11 or newer is required. The project includes its PDF viewer and assets; no Node build or runtime CDN is needed.
+Python 3.11 or newer is required. The project includes its PDF viewer, Markdown editor, and assets; no Node build or runtime CDN is needed.
 
 ```sh
 python3 -m venv .venv
@@ -49,7 +49,8 @@ For only the web app, install with `python -m pip install -e .`. The native wind
 
 - Create folders and nested subfolders using **+** in the sidebar. The folder menu lets you rename, recolor, or move a folder. Empty folders can be deleted.
 - Choose a folder, then use **New note** or **Import document**. Dragging files onto the app imports them into the selected folder. Rename or move a document from its **…** menu.
-- Notes have **Read** and **Edit note** modes. Editing saves automatically, with bold, italic, headings, lists, and quotes. Pasted text is inserted as plain text.
+- Notes have **Read** and **Edit note** modes and save Markdown source automatically. In **Live preview**, type `# Title` and press Enter to see a heading immediately. Completed lines display bold, italic, strikethrough, links, inline code, lists, quotes, and code blocks; return to a line to edit its Markdown syntax. The toolbar formats Markdown and provides **Table**, with a choice of columns and rows. Click a table cell to edit its source, then move outside the table to preview it. Switch **Live preview** to **Markdown source** to see all syntax. Undo/redo and **⌘/Ctrl B / I** work in the editor. Use **Read** to annotate rendered text, including table cells.
+- Existing HTML notes gain Markdown source automatically while retaining their rendered content, revisions, and annotations until edited. Underlined text remains supported as `<u>text</u>`. Old unsaved HTML browser drafts are recovered into Markdown. The document **…** menu downloads notes as **Markdown (.md)** or **HTML**.
 - Select text to open a floating toolbar with **Highlight**, **Underline**, **Strikethrough**, **Comment**, and four annotation colors.
 - Comments automatically highlight the selected text. Click the passage or its quote in the side panel to return to the thread. Reply with an answer or finding, then **Mark as resolved**. Resolved threads can be reopened.
 - Each saved thread entry has a **Reply / Answer** switch. Replies keep the ordinary comment style; answers have a blue background, border, and subtle shadow in light and dark themes. Choose the type before posting or change it afterward. Types sync across clients and persist in the workspace; assigning an answer leaves thread resolution under your control.
@@ -115,7 +116,9 @@ python scripts/browser_smoke.py
 python scripts/desktop_smoke.py
 ```
 
-The browser smoke check uses an installed Chrome, an isolated temporary workspace, and a temporary server. It exercises folders, rich notes, text annotations, replies, resolution, two-window synchronization, conflicting edits, PDF text selection, zoom, page navigation, persistence, and the mobile layout. Screenshots and results go to `.local-data/artifacts/`. No user workspace is modified.
+The browser smoke check uses an installed Chrome, an isolated temporary workspace, and a temporary server. It exercises live Markdown formatting, tables, undo/redo, Markdown downloads, folders, text annotations, replies, resolution, two-window synchronization, conflicting edits, PDF text selection, zoom, page navigation, persistence, and the mobile layout. Screenshots and results go to `.local-data/artifacts/`. No user workspace is modified.
+
+To change the editor bundle, install Node.js and run `npm ci`, edit `frontend/note-editor.js`, then run `npm run build:editor`. The bundle and dependency license notices are checked in so normal Python installations run offline without Node.js.
 
 For development without using your normal workspace:
 

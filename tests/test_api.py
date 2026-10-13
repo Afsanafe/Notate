@@ -40,6 +40,67 @@ def test_note_conflicts_do_not_overwrite_and_persist(client, app):
         assert actual['revision'] == 2
 
 
+def test_markdown_notes_preserve_source_render_tables_sync_and_conflicts(client, app):
+    source = '# Research log\n\n**Evidence** and *ideas*, ~~old~~ and `code`.\n\n###### Small heading\n\n| Topic | Finding |\n| --- | --- |\n| Light | **Blue** |\n\n```python\nprint("hi")\n```\n'
+    response = client.post('/api/notes',json={'title':'Markdown note','markdown':source})
+    assert response.status_code == 201
+    note = response.json()
+    assert note['markdown'] == source
+    for element in ('<h1>Research log</h1>', '<h6>Small heading</h6>', '<strong>Evidence</strong>', '<em>ideas</em>', '<s>old</s>', '<table>', '<strong>Blue</strong>', '<pre><code>'):
+        assert element in note['content']
+    with client.websocket_connect('/api/events') as socket:
+        socket.receive_json()
+        updated = client.patch(f'/api/items/{note["id"]}',json={'revision':1,'markdown':source+'\nA finding.\n'},headers={'X-Notate-Client':'markdown-editor'})
+        assert updated.status_code == 200
+        event = socket.receive_json()
+        assert event['scope'] == 'item' and event['id'] == note['id']
+    assert client.patch(f'/api/items/{note["id"]}',json={'revision':1,'markdown':'Stale source'}).status_code == 409
+    with TestClient(create_app(app.state.store.directory)) as restarted:
+        saved = restarted.get(f'/api/items/{note["id"]}').json()
+        assert saved['markdown'] == source+'\nA finding.\n' and saved['revision'] == 2
+        assert restarted.get(f'/api/items/{note["id"]}/export').json()['document']['markdown'] == saved['markdown']
+        empty = restarted.patch(f'/api/items/{note["id"]}',json={'revision':2,'markdown':''}).json()
+        assert empty['markdown'] == '' and empty['content'] == ''
+
+
+def test_legacy_note_migration_preserves_content_revisions_and_annotations(client, app):
+    original = '<h1>Research</h1><p>A good question starts a discovery. <strong>Evidence</strong> helps.</p><p><u>Underline</u> and <s>Old idea</s>.</p><table><tr><th>Key</th><th>Value</th></tr><tr><td>A</td><td>B</td></tr></table>'
+    note = new_note(client,content=original)
+    original = note['content']
+    annotation = text_annotation(client,note['id'])
+    with app.state.store.connect() as db:
+        db.execute('ALTER TABLE items DROP COLUMN markdown')
+    for _ in range(2):
+        with TestClient(create_app(app.state.store.directory)) as restarted:
+            saved = restarted.get(f'/api/items/{note["id"]}').json()
+            assert saved['content'] == original
+            assert saved['revision'] == 1 and saved['updated_at'] == note['updated_at']
+            assert '# Research' in saved['markdown'] and '**Evidence**' in saved['markdown']
+            assert '<u>Underline</u>' in saved['markdown'] and '~~Old idea~~' in saved['markdown']
+            assert '| Key | Value |' in saved['markdown']
+            assert restarted.get(f'/api/items/{note["id"]}/annotations').json() == [annotation]
+    with TestClient(create_app(app.state.store.directory)) as restarted:
+        edited = restarted.patch(f'/api/items/{note["id"]}',json={'revision':1,'markdown':saved['markdown']+'\n\nNew finding.'}).json()
+        assert '<u>Underline</u>' in edited['content'] and '<s>Old idea</s>' in edited['content']
+        assert 'A good question starts a discovery.' in edited['content']
+        assert restarted.get(f'/api/items/{note["id"]}/annotations').json()[0]['anchor'] == annotation['anchor']
+
+
+def test_markdown_note_validation_safe_rendering_and_old_draft_conversion(client, pdf_bytes):
+    note = client.post('/api/notes',json={'title':'Safe Markdown','markdown':'# Note\n\n<script>alert(1)</script><img src=x onerror=alert(1)>[unsafe](javascript:alert(1))'}).json()
+    assert '<script' not in note['content'] and '<img' not in note['content'] and 'javascript:' not in note['content']
+    assert '<script' in note['markdown']  # Keep source verbatim, sanitize rendering.
+    assert client.post('/api/notes',json={'markdown':None}).status_code == 422
+    assert client.post('/api/notes',json={'markdown':'source','content':'<p>HTML</p>'}).status_code == 422
+    for fields in ({'markdown':None}, {'markdown':'source','content':'<p>HTML</p>'}):
+        assert client.patch(f'/api/items/{note["id"]}',json={'revision':1,**fields}).status_code == 422
+    pdf = client.post('/api/import',files={'file':('test.pdf',pdf_bytes,'application/pdf')}).json()
+    assert client.patch(f'/api/items/{pdf["id"]}',json={'revision':1,'markdown':'Overwrite PDF'}).status_code == 422
+    converted = client.post('/api/notes/convert',json={'content':'<h2>Unsaved draft</h2><p>A <strong>finding</strong>.</p>'}).json()
+    assert converted['markdown'] == '## Unsaved draft\n\nA **finding**.'
+    assert client.get(f'/api/items/{note["id"]}').json()['revision'] == 1
+
+
 def test_nested_folder_cycles_and_nonempty_delete(client):
     root = client.post('/api/folders',json={'name':'Research'}).json()
     child = client.post('/api/folders',json={'name':'Questions','parent_id':root['id']}).json()

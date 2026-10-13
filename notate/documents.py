@@ -13,6 +13,7 @@ import bleach
 import markdown
 from markdown.extensions import Extension
 from markdown.inlinepatterns import SimpleTagInlineProcessor
+from markdownify import MarkdownConverter
 from docx import Document
 from docx.oxml.ns import qn
 from docx.table import Table
@@ -21,7 +22,7 @@ from pypdf import PdfReader
 from pypdf.errors import DependencyError
 
 
-ALLOWED_TAGS = ["p", "br", "strong", "em", "b", "i", "u", "s", "h1", "h2", "h3", "h4",
+ALLOWED_TAGS = ["p", "br", "strong", "em", "b", "i", "u", "s", "h1", "h2", "h3", "h4", "h5", "h6",
                 "ul", "ol", "li", "blockquote", "pre", "code", "a", "hr", "table", "thead",
                 "tbody", "tr", "th", "td"]
 
@@ -40,6 +41,26 @@ class StrikeExtension(Extension):
 def render_comment_markdown(value):
     rendered = markdown.markdown(value, extensions=['fenced_code', 'tables', 'sane_lists', 'nl2br', StrikeExtension()])
     return clean_note(rendered)
+
+
+def render_note_markdown(value):
+    # Large notes do not belong in the comment preview's process-wide cache.
+    return clean_note(markdown.markdown(value, extensions=[
+        'fenced_code', 'tables', 'sane_lists', 'nl2br', StrikeExtension()]))
+
+
+class NoteMarkdownConverter(MarkdownConverter):
+    def convert_u(self, el, text, parent_tags):
+        # Markdown has no underline syntax; retain existing underlined text.
+        return f'<u>{text}</u>'
+
+    def convert_s(self, el, text, parent_tags):
+        return f'~~{text}~~'
+
+
+def note_html_to_markdown(value):
+    return NoteMarkdownConverter(heading_style='ATX', bullets='-',
+                                 escape_misc=True).convert(clean_note(value))
 
 
 def pdf_pages(path):

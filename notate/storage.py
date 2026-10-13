@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .documents import render_comment_markdown
+from .documents import note_html_to_markdown, render_comment_markdown
 
 
 def identifier():
@@ -60,6 +60,8 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             if 'kind' not in {row['name'] for row in db.execute('PRAGMA table_info(comments)')}:
                 db.execute("ALTER TABLE comments ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply' CHECK(kind IN ('reply', 'answer'))")
+            if 'markdown' not in {row['name'] for row in db.execute('PRAGMA table_info(items)')}:
+                db.execute('ALTER TABLE items ADD COLUMN markdown TEXT')
             if not db.execute("SELECT value FROM settings WHERE key = 'initialized'").fetchone():
                 now = timestamp()
                 reading, notes = identifier(), identifier()
@@ -81,6 +83,11 @@ class Store:
                 db.execute("INSERT INTO items (id,title,kind,folder_id,content,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
                            (identifier(), "Welcome to Notate", "note", notes, content, now, now))
                 db.execute("INSERT INTO settings VALUES ('initialized', '1')")
+            # Retain the original rendered content and all text anchors. The new
+            # source is rendered only after the user actually edits the note.
+            for note in db.execute("SELECT id,content FROM items WHERE kind='note' AND markdown IS NULL").fetchall():
+                db.execute('UPDATE items SET markdown=? WHERE id=?',
+                           (note_html_to_markdown(note['content']), note['id']))
 
     @contextmanager
     def connect(self):

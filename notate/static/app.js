@@ -1,3 +1,5 @@
+import {createNoteEditor} from './vendor/note-editor.js';
+
 const $ = (query, root = document) => root.querySelector(query);
 const $$ = (query, root = document) => [...root.querySelectorAll(query)];
 const paths = {
@@ -23,6 +25,7 @@ const paths = {
   up:'<path d="M12 19V5m-5 5 5-5 5 5"/>',
   list:'<path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/>',
   quote:'<path d="M10 11H4V5h6v9a4 4 0 0 1-4 4M20 11h-6V5h6v9a4 4 0 0 1-4 4"/>',
+  table:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16M15 4v16"/>',
   check:'<path d="m5 12 4 4L19 6"/>',
   trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
   edit:'<path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z"/>',
@@ -47,8 +50,10 @@ const state = {
   observer: null, pdfDocuments: new Map(), zoom: null, page: 1, renderGeneration: 0,
   saveTimer: null, toastTimer: null, renderQueue: [], rendering: false, retryTimer: null,
   popupPreferences: readLocal('notate-popup-preferences', {}), popupTarget: null,
-  popupMatches: [], popupDrafts: new Map(), popupFrame: null, popupPending: false
+  popupMatches: [], popupDrafts: new Map(), popupFrame: null, popupPending: false,
+  livePreview: readLocal('notate-live-preview', true)
 };
+let noteEditor = null;
 icons();
 function setTheme(theme, remember = true) {
   document.documentElement.dataset.theme = theme;
@@ -213,7 +218,8 @@ function showDocumentMenu(anchor) {
     {label:'Export annotations (JSON)',icon:'download',run:() => download(`/api/items/${item.id}/export`)},
   ];
   if (item.filename) entries.push({label:'Download original file',icon:'download',run:() => download(`/api/items/${item.id}/file?download=true`)});
-  if (item.kind === 'note') entries.push({label:'Download note (HTML)',icon:'download',run:async () => { if (!await flushNote()) return; const content = `<!doctype html><meta charset="utf-8"><title>${escapeHTML(item.title)}</title><body><h1>${escapeHTML(item.title)}</h1>${state.active.content}</body>`; downloadBlob(new Blob([content],{type:'text/html'}),`${item.title.replace(/[^a-z\d -]/gi,'').slice(0,80) || 'note'}.html`); }});
+  if (item.kind === 'note') entries.push({label:'Download note (Markdown)',icon:'download',run:async () => { if (!await flushNote()) return; downloadBlob(new Blob([state.active.markdown],{type:'text/markdown;charset=utf-8'}),`${item.title.replace(/[^a-z\d -]/gi,'').slice(0,80) || 'note'}.md`); }},
+    {label:'Download note (HTML)',icon:'download',run:async () => { if (!await flushNote()) return; const content = `<!doctype html><meta charset="utf-8"><title>${escapeHTML(item.title)}</title><body><h1>${escapeHTML(item.title)}</h1>${state.active.content}</body>`; downloadBlob(new Blob([content],{type:'text/html'}),`${item.title.replace(/[^a-z\d -]/gi,'').slice(0,80) || 'note'}.html`); }});
   entries.push(null,{label:'Delete document',icon:'trash',danger:true,run:() => modal('Delete this document?',`<p>“${escapeHTML(item.title)}” and its annotations will be permanently removed from this workspace. Download a backup first if you want to keep a copy.</p>`,'Delete document',async () => { await api(`/api/items/${item.id}`,{method:'DELETE'}); writeLocal(`notate-draft-${item.id}`,null); state.dirty = false; state.conflict = false; state.active = null; clearTimeout(state.saveTimer); await refreshWorkspace(); if (state.items.length) await openItem(state.items[0].id); else renderEmpty(); toast('Document deleted.'); },{danger:true})});
   menu(anchor,entries);
 }
@@ -255,6 +261,8 @@ function renderEmpty() {
   updatePopupToggle();
 }
 function resetReader() {
+  noteEditor?.destroy(); noteEditor = null; state.editing = false;
+  $('#reader-hint').textContent = 'Select text to highlight, underline, strike, or comment';
   state.observer?.disconnect(); state.observer = null; state.renderGeneration++; state.renderQueue = [];
   state.pdf = null; state.selection = null; hideSelection(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true;
   closeAnnotationPopover(); state.popupTarget = null; state.popupMatches = [];
@@ -268,10 +276,16 @@ async function openItem(id, edit = false, force = false) {
   resetReader(); state.active = item; state.annotations = annotations; state.selected = null; state.filter = 'all'; state.page = 1; state.zoom = null;
   state.dirty = false; state.conflict = false; state.editing = false;
   const draft = readLocal(`notate-draft-${id}`,null);
-  if (item.kind === 'note' && draft && draft.content !== item.content) {
-    state.active.content = draft.content; state.dirty = true;
-    if (draft.revision !== item.revision) { state.active.revision = draft.revision; state.conflict = true; }
-    toast('Your unsaved draft has been restored.');
+  if (item.kind === 'note' && draft) {
+    const source = typeof draft.markdown === 'string' ? draft.markdown
+      : typeof draft.content === 'string' ? (await api('/api/notes/convert', {method:'POST', body:{content:draft.content}})).markdown : item.markdown;
+    if (opening !== state.opening) return;
+    if (source !== item.markdown) {
+      state.active.markdown = source; state.active.revision = draft.revision; state.dirty = true; edit = true;
+      if (draft.revision !== item.revision) state.conflict = true;
+      writeLocal(`notate-draft-${id}`, {markdown:source,revision:state.active.revision});
+      toast('Your unsaved draft has been restored.');
+    } else writeLocal(`notate-draft-${id}`,null);
   }
   state.recent = [id,...state.recent.filter(value => value !== id)].slice(0,50); writeLocal('notate-recent',state.recent); writeLocal('notate-active',id);
   renderHeading(); renderNavigation(); renderAnnotations(); updateSaveState();
@@ -282,45 +296,53 @@ async function openItem(id, edit = false, force = false) {
   else if (state.dirty) state.saveTimer = setTimeout(() => saveNote(),800);
 }
 function renderText(item, edit = false) {
-  const reader = $('#reader'); reader.innerHTML = '<article class="paper text-paper"><div class="document-content" id="note-content"></div><div class="annotation-layer"></div></article>';
+  const reader = $('#reader'); reader.innerHTML = '<article class="paper text-paper"><div class="document-content" id="note-content"></div><div id="note-editor" hidden></div><div class="annotation-layer"></div></article>';
   const content = $('#note-content'); content.innerHTML = item.content;
+  $('.text-paper').classList.toggle('markdown-note', item.kind === 'note');
   $('#page-tools').hidden = true; $('#zoom-tools').hidden = true;
   if (item.kind === 'note') {
     $('#document-mode').innerHTML = '<div class="mode-toggle"><button id="read-mode" class="active">Read</button><button id="edit-mode">Edit note</button></div>';
     $('#read-mode').onclick = action(async () => { if (await flushNote()) setEditMode(false); }); $('#edit-mode').onclick = () => setEditMode(true);
-    content.addEventListener('input',onNoteInput);
-    content.addEventListener('paste', event => { event.preventDefault(); document.execCommand('insertText',false,event.clipboardData.getData('text/plain')); });
-    content.addEventListener('drop', event => { event.preventDefault(); });
   } else $('#document-mode').innerHTML = `<span class="read-mode">${icon('book')}Reading view${item.filename?.toLowerCase().endsWith('.docx') ? ' · formatted text' : ''}</span>`;
   setEditMode(edit && item.kind === 'note'); requestAnimationFrame(renderTextMarks);
 }
 function setEditMode(edit) {
+  if (edit && typeof state.active?.markdown !== 'string') {
+    toast('Restart the local Notate server to enable Markdown editing, then reload this window.', true); return;
+  }
   state.editing = edit; const content = $('#note-content'); if (!content) return;
-  content.contentEditable = edit ? 'true' : 'false'; content.spellcheck = edit;
+  content.hidden = edit; $('#note-editor').hidden = !edit;
+  if (edit && !noteEditor) noteEditor = createNoteEditor($('#note-editor'), state.active.markdown || '', onNoteInput, state.livePreview);
+  if (!edit) { content.innerHTML = state.active.content; requestAnimationFrame(renderTextMarks); }
   $('.text-paper').classList.toggle('editing',edit); $('#format-toolbar').hidden = !edit;
   $('#edit-mode')?.classList.toggle('active',edit); $('#read-mode')?.classList.toggle('active',!edit);
-  if (edit) content.focus(); hideSelection(); closeAnnotationPopover();
+  updateEditorPreview(); if (edit) noteEditor.focus(); hideSelection(); closeAnnotationPopover();
+  $('#reader-hint').textContent = edit ? 'Markdown saves automatically. Switch to Read to highlight or comment.' : 'Select text to highlight, underline, strike, or comment';
 }
-function onNoteInput() {
+function updateEditorPreview() {
+  const button = $('#markdown-preview-toggle');
+  button.setAttribute('aria-pressed', state.livePreview); button.textContent = state.livePreview ? 'Live preview' : 'Markdown source';
+  button.title = state.livePreview ? 'Show raw Markdown source' : 'Render Markdown as you leave each line';
+}
+function onNoteInput(source) {
   if (!state.active) return;
-  state.dirty = true; state.active.content = $('#note-content').innerHTML;
-  writeLocal(`notate-draft-${state.active.id}`,{content:state.active.content,revision:state.active.revision}); updateSaveState();
+  state.dirty = true; state.active.markdown = source;
+  writeLocal(`notate-draft-${state.active.id}`,{markdown:source,revision:state.active.revision}); updateSaveState();
   clearTimeout(state.saveTimer); if (!state.conflict) state.saveTimer = setTimeout(() => saveNote(),650);
-  requestAnimationFrame(renderTextMarks);
 }
 async function saveNote() {
   if (state.saving) { await state.saving; if (state.dirty && !state.conflict) return saveNote(); return !state.dirty; }
   if (!state.dirty || !state.active || state.active.kind !== 'note') return true;
   if (state.conflict) return false;
   clearTimeout(state.saveTimer);
-  const id = state.active.id; const content = state.active.content; const revision = state.active.revision;
+  const id = state.active.id; const markdown = state.active.markdown; const revision = state.active.revision;
   state.saving = (async () => {
     try {
-      const saved = await api(`/api/items/${id}`,{method:'PATCH',body:{content,revision}});
+      const saved = await api(`/api/items/${id}`,{method:'PATCH',body:{markdown,revision}});
       if (state.active?.id === id) {
-        const newerContent = state.active.content; state.active = {...saved,content:newerContent};
-        state.dirty = newerContent !== content;
-        if (state.dirty) writeLocal(`notate-draft-${id}`,{content:newerContent,revision:saved.revision});
+        const newerSource = state.active.markdown; state.active = {...saved,markdown:newerSource};
+        state.dirty = newerSource !== markdown;
+        if (state.dirty) writeLocal(`notate-draft-${id}`,{markdown:newerSource,revision:saved.revision});
         else writeLocal(`notate-draft-${id}`,null);
         await refreshWorkspace();
       }
@@ -341,28 +363,28 @@ function showConflictNotice() {
   $('button',notice).onclick = action(reviewConflict); $('#reader').prepend(notice);
 }
 async function reviewConflict() {
-  const draft = state.active.content; let latest;
+  const draft = state.active.markdown; let latest;
   try { latest = await api(`/api/items/${state.active.id}`); }
   catch (error) {
     if (error.status !== 404) throw error;
     const oldId = state.active.id; const title = state.active.title;
     modal('Keep this thought', `<p>This note was deleted in another window. Your draft is still here. Save it as a new note to keep writing.</p><label for="recovered-title">Note title</label><input id="recovered-title" name="title" value="${escapeHTML(title)}" required maxlength="250"><button type="button" id="download-draft" class="button subtle" style="margin-top:14px">Download my draft</button>`, 'Save as new note', async data => {
       const folder = state.folders.some(folder => folder.id === state.active.folder_id) ? state.active.folder_id : null;
-      const recovered = await api('/api/notes',{method:'POST',body:{title:data.get('title'),folder_id:folder,content:draft}});
+      const recovered = await api('/api/notes',{method:'POST',body:{title:data.get('title'),folder_id:folder,markdown:draft}});
       state.dirty = false; state.conflict = false; writeLocal(`notate-draft-${oldId}`,null); await refreshWorkspace(); await openItem(recovered.id,true);
     });
-    $('#download-draft').onclick = () => downloadBlob(new Blob([draft],{type:'text/html'}),'notate-unsaved-draft.html'); return;
+    $('#download-draft').onclick = () => downloadBlob(new Blob([draft],{type:'text/markdown'}),'notate-unsaved-draft.md'); return;
   }
   modal('Two thoughts at once', '<p>Another window saved a newer version. Choose <strong>Keep my draft</strong> to replace it with this window’s draft, or use <strong>Load saved version</strong> to discard this draft. You can copy or download your draft before deciding.</p><button type="button" id="download-draft" class="button subtle">Download my draft</button>', 'Keep my draft', async () => {
     // Use the reviewed revision. A further edit during this dialog is still rejected.
     state.active.revision = latest.revision; state.conflict = false;
-    writeLocal(`notate-draft-${state.active.id}`,{content:draft,revision:latest.revision});
+    writeLocal(`notate-draft-${state.active.id}`,{markdown:draft,revision:latest.revision});
     if (!await saveNote()) throw new Error('The saved version changed again. Reopen the review to compare the latest version.');
     $('.conflict-notice')?.remove();
   },{cancelText:'Load saved version',onCancel:async () => {
     $('#modal').close(); state.dirty = false; state.conflict = false; writeLocal(`notate-draft-${state.active.id}`,null); await openItem(state.active.id,false,true);
   }});
-  $('#download-draft').onclick = () => downloadBlob(new Blob([draft],{type:'text/html'}),'notate-unsaved-draft.html');
+  $('#download-draft').onclick = () => downloadBlob(new Blob([draft],{type:'text/markdown'}),'notate-unsaved-draft.md');
 }
 
 let pdfModulePromise;
@@ -497,6 +519,7 @@ function mergeRects(rects) {
   return output;
 }
 function captureSelection() {
+  if (state.editing) { hideSelection(); return; }
   const selection = getSelection();
   if (!state.active || !selection.rangeCount || selection.isCollapsed || !selection.toString().trim()) { hideSelection(); return; }
   const range = selection.getRangeAt(0);
@@ -603,7 +626,7 @@ function anchoredRange(record, content) {
 }
 function renderTextMarks() {
   const content = $('#note-content'); const paper = $('.text-paper'); if (!content || !paper) return;
-  const layer = $('.annotation-layer',paper); layer.replaceChildren(); const bounds = paper.getBoundingClientRect();
+  const layer = $('.annotation-layer',paper); layer.replaceChildren(); if (state.editing) return; const bounds = paper.getBoundingClientRect();
   for (const record of state.annotations) {
     if (record.anchor.type !== 'text') continue;
     const range = anchoredRange(record,content); record.orphaned = !range;
@@ -788,6 +811,10 @@ function openPanel() {
   if (wasHidden && innerWidth > 860 && state.pdf && !state.zoom) buildPDFPages();
 }
 function focusAnnotation(id, scrollDocument = false, options = {}) {
+  if (state.editing && scrollDocument) {
+    action(async () => { if (await flushNote()) { setEditMode(false); renderTextMarks(); focusAnnotation(id,true,options); } })();
+    return;
+  }
   const record = state.annotations.find(value => value.id === id); if (!record) return;
   state.popupMatches = options.matches || [id];
   state.popupPending = scrollDocument;
@@ -935,7 +962,7 @@ async function synchronizeActive() {
   const current = state.active; const latest = await api(`/api/items/${current.id}`);
   if (state.active?.id !== current.id || latest.revision === current.revision) return;
   if (state.dirty || state.saving) { state.conflict = true; showConflictNotice(); }
-  else { const scroll = $('#reader').scrollTop; state.active = latest; renderHeading(); if (current.kind === 'note') { $('#note-content').innerHTML = latest.content; renderTextMarks(); } $('#reader').scrollTop = scroll; }
+  else { const scroll = $('#reader').scrollTop; state.active = latest; renderHeading(); if (current.kind === 'note') { $('#note-content').innerHTML = latest.content; noteEditor?.setSource(latest.markdown || ''); renderTextMarks(); } $('#reader').scrollTop = scroll; }
 }
 async function synchronize() {
   await refreshWorkspace();
@@ -986,8 +1013,24 @@ $('#current-page').onchange = event => goToPage(Number(event.target.value) || 1)
 $('#zoom-out').onclick = () => zoomPDF(-1); $('#zoom-in').onclick = () => zoomPDF(1); $('#zoom-fit').onclick = () => zoomPDF(0);
 $('#save-state').onclick = action(() => { if (state.conflict) return reviewConflict(); });
 $$('[data-format]').forEach(button => {
-  button.onmousedown = event => event.preventDefault(); button.onclick = () => { $('#note-content')?.focus(); document.execCommand(button.dataset.format,false,button.dataset.value || null); onNoteInput(); };
+  button.onmousedown = event => event.preventDefault(); button.onclick = () => noteEditor?.format(button.dataset.format);
 });
+$('#markdown-preview-toggle').onmousedown = event => event.preventDefault();
+$('#markdown-preview-toggle').onclick = () => {
+  state.livePreview = !state.livePreview; writeLocal('notate-live-preview',state.livePreview);
+  noteEditor?.setPreview(state.livePreview); updateEditorPreview(); noteEditor?.focus();
+};
+$('#insert-table').onmousedown = event => event.preventDefault();
+$('#insert-table').onclick = () => {
+  if (!noteEditor) return;
+  const editor = noteEditor;
+  modal('Insert a table', '<label for="table-columns">Columns</label><input id="table-columns" name="columns" type="number" min="1" max="12" value="3" required><label for="table-rows">Rows below the header</label><input id="table-rows" name="rows" type="number" min="1" max="50" value="2" required><p class="table-help">Click a cell to edit its Markdown. Move outside the table to see its formatted appearance.</p>', 'Insert table', async data => {
+    const rows = Number(data.get('rows')), columns = Number(data.get('columns'));
+    if (!Number.isInteger(rows) || !Number.isInteger(columns) || rows < 1 || rows > 50 || columns < 1 || columns > 12) throw new Error('Use 1–12 columns and 1–50 rows.');
+    if (noteEditor !== editor || !state.editing) throw new Error('Open the note editor again to insert a table.');
+    editor.insertTable(rows,columns); requestAnimationFrame(() => editor.focus());
+  });
+};
 $('#reader').addEventListener('pointerdown',() => $('#reader').classList.add('selecting'));
 $('#reader').addEventListener('pointerup',event => {
   $('#reader').classList.remove('selecting');

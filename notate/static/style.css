@@ -145,3 +145,48 @@
 .markdown-body pre code{padding:0;background:transparent}.markdown-body a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
 .markdown-body table{border-collapse:collapse;max-width:100%;display:block;overflow:auto;margin:8px 0}.markdown-body th,.markdown-body td{border:1px solid var(--line);padding:4px 6px;vertical-align:top}.markdown-body th{font-weight:650}
 .markdown-body hr{border:0;border-top:1px solid var(--line);margin:10px 0}
+
+/* Markdown note editing and live preview. */
+.format-toolbar { flex-wrap: wrap; gap: 5px; }
+.format-toolbar .table-toolbar-button { gap: 5px; padding: 0 7px; }
+.format-toolbar .markdown-preview-toggle { padding: 0 9px; margin-left: 6px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.format-toolbar .markdown-preview-toggle[aria-pressed="true"] { color: var(--green); background: var(--green-light); border-color: transparent; }
+.table-help { color: var(--muted); font-size: 12px; line-height: 1.6; }
+#note-editor { position: relative; z-index: 2; min-height: 240px; }
+#note-editor .cm-editor { outline: none; color: var(--ink); font: 14px/1.95 Georgia, "Times New Roman", serif; }
+#note-editor .cm-scroller { overflow: visible; font-family: inherit; }
+#note-editor .cm-content { padding: 0 0 70px; min-height: 240px; caret-color: var(--ink); overflow-wrap: anywhere; }
+#note-editor .cm-line { padding: 0; }
+#note-editor .cm-placeholder { color: var(--muted); }
+#note-editor .cm-cursor { border-left-color: var(--ink); }
+#note-editor .cm-selectionBackground { background: #93af9660; }
+#note-editor .cm-focused .cm-selectionBackground { background: #93af9680; }
+#note-editor .md-heading { font-family: inherit; line-height: 1.4; color: var(--ink); font-weight: 600; padding: 8px 0 5px; }
+#note-editor .md-h1 { font-size: 29px; letter-spacing: -.4px; }
+#note-editor .md-h2 { font-size: 23px; }
+#note-editor .md-h3 { font-size: 19px; }
+#note-editor .md-h4 { font-size: 17px; }
+#note-editor .md-h5 { font-size: 15px; }
+#note-editor .md-h6 { font-size: 14px; }
+#note-editor .md-strong { font-weight: 700; }
+#note-editor .md-emphasis { font-style: italic; }
+#note-editor .md-strike { text-decoration: line-through; }
+#note-editor .md-link { color: var(--green); text-decoration: underline; text-underline-offset: 3px; }
+#note-editor .md-quote { border-left: 3px solid var(--green); padding-left: 16px; background: var(--page); color: var(--muted); font-style: italic; }
+#note-editor .md-bullet { color: var(--green); font-weight: 700; }
+#note-editor .md-inline-code { background: var(--page); border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
+#note-editor .md-code-block, #note-editor .md-table-source { background: var(--page); padding: 0 12px; font: 12px/1.8 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.md-table-preview { overflow-x: auto; margin: 12px 0; }
+.md-table-preview table, .markdown-note .document-content table { border-collapse: collapse; width: 100%; font: 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.md-table-preview th, .md-table-preview td, .markdown-note .document-content th, .markdown-note .document-content td { border: 1px solid var(--line); padding: 9px 12px; min-width: 90px; height: 40px; }
+.md-table-preview th, .markdown-note .document-content th { background: var(--page); font-weight: 600; text-align: left; }
+.md-table-preview td, .md-table-preview th { cursor: text; }
+.md-table-preview td:hover, .md-table-preview th:hover { background: var(--green-light); }
+.md-table-preview p { margin: 0; }
+.text-paper.editing > .annotation-layer { display: none; }
+.markdown-note .document-content h2 { font: 600 23px/1.4 Georgia, serif; margin: 24px 0 14px; color: var(--ink); }
+.markdown-note .document-content h3 { font: 600 19px/1.4 Georgia, serif; color: var(--ink); }
+.markdown-note .document-content h4 { font: 600 17px/1.4 Georgia, serif; color: var(--ink); }
+.markdown-note .document-content h5, .markdown-note .document-content h6 { color: var(--ink); font-size: 15px; }
+@media(max-width: 900px) { .format-toolbar .editor-hint { display: none; } }
+@media(max-width: 640px) { .format-toolbar { padding: 5px 8px; gap: 3px; } .format-toolbar .markdown-preview-toggle { margin-left: auto; font-size: 10px; } }
