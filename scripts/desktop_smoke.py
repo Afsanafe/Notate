@@ -62,6 +62,12 @@ def run():
                 wait_for("document.querySelector('.comment-text')?.textContent === 'A question from the desktop app.'")
                 records = httpx.get(url+f'/api/items/{item_id}/annotations').json()
                 assert records[0]['comments'][0]['body'] == 'A question from the desktop app.'
+                window.evaluate_js("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text => { window.__copiedAnnotationText = text; }}}); document.querySelector('.annotation-copy').click()")
+                wait_for("window.__copiedAnnotationText?.includes('PDF page: 1')")
+                copied = window.evaluate_js('window.__copiedAnnotationText')
+                assert 'Original file: Desktop reading test.pdf' in copied
+                assert '## Highlighted source text\n\n> Reading is a conversation with an idea.' in copied
+                assert '### Initial comment or question\n\n> A question from the desktop app.' in copied
                 window.evaluate_js("if (document.documentElement.dataset.theme !== 'dark') document.querySelector('#theme-toggle').click()")
                 wait_for("document.documentElement.dataset.theme === 'dark'")
                 window.evaluate_js('''(() => {
@@ -80,11 +86,14 @@ def run():
                 wait_for("document.querySelector('.popup-thread').textContent.includes('An answer from the passage popup.')")
                 records = httpx.get(url+f'/api/items/{item_id}/annotations').json()
                 assert len(records) == 1 and len(records[0]['comments']) == 2
+                window.evaluate_js("document.querySelector('.annotation-copy').click()")
+                wait_for("window.__copiedAnnotationText?.includes('### Reply 1')")
+                assert '> An answer from the passage popup.' in window.evaluate_js('window.__copiedAnnotationText')
                 window.evaluate_js("document.querySelector('#toggle-popups').click()")
                 wait_for("document.querySelector('#annotation-popover').hidden && document.querySelector('#toggle-popups').getAttribute('aria-pressed') === 'false'")
                 results.update(status='passed',native_engine='macOS WKWebView',pdf_text_selection=True,comment_saved_in_shared_backend=True,
-                               dark_mode=True,contained_selection=True,passage_popup_reply=True,popup_toggle=True)
-                print('Native desktop PDF rendering, text selection, dark mode, passage popups, replies, and toggle passed.',flush=True)
+                               dark_mode=True,contained_selection=True,passage_popup_reply=True,popup_toggle=True,copy_markdown=True)
+                print('Native desktop PDF rendering, text selection, passage popups, and per-thread Markdown copy passed.',flush=True)
             except BaseException as error:
                 results.update(status='failed',error=str(error))
                 print(f'Desktop verification failed: {error}',flush=True)

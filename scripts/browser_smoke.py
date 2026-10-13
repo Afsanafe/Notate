@@ -81,6 +81,8 @@ def run(additional_pdf=None):
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(channel='chrome',headless=True)
                 context = browser.new_context(viewport={'width':1512,'height':982},device_scale_factor=1)
+                # Capture clipboard writes without changing the user's system clipboard.
+                context.add_init_script("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text => { window.__copiedAnnotationText = text; }}})")
                 page = context.new_page(); errors = []; outside_requests = []
                 page.on('pageerror',lambda error: errors.append(str(error)))
                 page.on('request',lambda request: outside_requests.append(request.url) if not request.url.startswith(url) else None)
@@ -110,6 +112,66 @@ def run(additional_pdf=None):
                 select_text(page,'#note-content','discovery'); page.locator('[data-annotate="strike"]').click()
                 expect(page.locator('.annotation-mark.strike')).to_have_count(1)
                 print('Nested folders, note autosave, anchored comments, replies, underline, and strikethrough work.',flush=True)
+
+                first_card = page.locator('#annotations-list .annotation-card').first
+                first_card.locator('.reply-form textarea').fill('UNSENT DRAFT — leave this out of the copied thread.')
+                first_card.locator('.annotation-copy').click()
+                page.wait_for_function("window.__copiedAnnotationText?.includes('### Reply 1')")
+                copied = page.evaluate('window.__copiedAnnotationText')
+                assert 'Document: My research findings' in copied and 'Folder: Research / Questions' in copied
+                assert 'Location: Note text' in copied and 'Status: Open' in copied
+                assert '## Highlighted source text\n\n> A good question' in copied
+                assert copied.index('What makes a question useful?') < copied.index('It can be answered with evidence.')
+                assert 'UNSENT DRAFT' not in copied
+                assert first_card.locator('.reply-form textarea').input_value().startswith('UNSENT DRAFT')
+                first_card.locator('.reply-form textarea').fill('')
+                page.evaluate('''() => {
+                  window.__copiedAnnotationText = null;
+                  navigator.clipboard.writeText = async () => { throw new Error('Clipboard denied'); };
+                  window.__originalExecCommand = document.execCommand;
+                  document.execCommand = function(command,...args) {
+                    if (command === 'copy') {
+                      const field = document.activeElement;
+                      window.__copiedAnnotationText = field.value;
+                      window.__copySelectedAll = field.selectionStart === 0 && field.selectionEnd === field.value.length;
+                      return true;
+                    }
+                    return window.__originalExecCommand.call(this,command,...args);
+                  };
+                }''')
+                first_card.locator('.annotation-copy').click(); page.wait_for_function('window.__copySelectedAll === true')
+                assert page.evaluate('window.__copiedAnnotationText') == copied
+                page.evaluate("document.execCommand = () => false")
+                first_card.locator('.annotation-copy').click()
+                expect(page.locator('#modal-title')).to_have_text('Copy passage and thread')
+                assert page.locator('#annotation-copy-text').input_value() == copied
+                page.locator('#modal-submit').click()
+                page.evaluate("document.execCommand = window.__originalExecCommand; navigator.clipboard.writeText = async text => { window.__copiedAnnotationText = text; }")
+                page.locator('#annotations-list .annotation-card').nth(1).locator('.annotation-copy').click()
+                page.wait_for_function("window.__copiedAnnotationText?.includes('No comments or questions recorded.')")
+                assert '## Highlighted source text\n\n> Evidence' in page.evaluate('window.__copiedAnnotationText')
+                assert 'What makes a question useful?' not in page.evaluate('window.__copiedAnnotationText')
+
+                page.locator('#new-note').click(); page.locator('#note-title').fill('Long quotation copy check'); page.locator('#modal-submit').click()
+                expect(page.locator('#document-title')).to_have_text('Long quotation copy check')
+                long_quote = 'A complete source passage, including <literal tags> & punctuation. ' * 14 + 'FINAL SOURCE SENTENCE.'
+                long_comment = 'A personal question about this source. ' * 12 + '\nFINAL COMMENT LINE.'
+                page.locator('#note-content').fill(long_quote); expect(page.locator('#save-state')).to_have_text('Saved locally')
+                page.locator('#read-mode').click(); select_text(page,'#note-content',long_quote)
+                page.locator('[data-annotate="comment"]').click(); page.locator('#comment-body').fill(long_comment)
+                page.locator('#comment-form button[type="submit"]').click()
+                expect(page.locator('#annotation-count')).to_have_text('1')
+                page.locator('.reply-form textarea').fill('Final answer in this thread.'); page.locator('.reply-form button').click()
+                expect(page.locator('.comment-text')).to_have_count(2)
+                page.locator('.annotation-copy').click()
+                page.wait_for_function("window.__copiedAnnotationText?.includes('Final answer in this thread.')")
+                full_copy = page.evaluate('window.__copiedAnnotationText')
+                assert '\n'.join('> '+line for line in long_quote.split('\n')) in full_copy
+                assert '\n'.join('> '+line for line in long_comment.split('\n')) in full_copy
+                assert '### Reply 1\n\n> Final answer in this thread.' in full_copy
+                page.locator('#document-menu').click(); page.locator('#floating-menu .menu-item').filter(has_text='Delete document').click(); page.locator('#modal-submit').click()
+                expect(page.locator('#document-title')).to_have_text('My research findings')
+                print('Per-item Markdown copy includes full quotes, saved comments/replies, source context, and clipboard fallbacks; unsent drafts stay private.',flush=True)
 
                 if page.locator('html').get_attribute('data-theme') != 'dark': page.locator('#theme-toggle').click()
                 expect(page.locator('html')).to_have_attribute('data-theme','dark')
@@ -171,6 +233,8 @@ def run(additional_pdf=None):
                 expect(second.locator('.comment-text')).to_have_count(3)
                 page.locator('.resolve-button').first.click(); expect(page.locator('.comment-text')).to_have_count(0)
                 page.locator('[data-filter="resolved"]').click(); expect(page.locator('.comment-text')).to_have_count(3)
+                page.locator('.annotation-copy').click()
+                page.wait_for_function("window.__copiedAnnotationText?.includes('Status: Resolved')")
                 page.locator('.resolve-button').click(); page.locator('[data-filter="all"]').click()
                 expect(page.locator('.comment-text')).to_have_count(3)
                 print('Two-window live sync, resolve, and reopen work.',flush=True)
@@ -213,6 +277,14 @@ def run(additional_pdf=None):
                 page.reload(); expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
                 expect(page.locator('.annotation-mark.comment')).to_have_count(1)
                 expect(page.locator('.comment-text')).to_have_count(2)
+                page.locator('#annotations-list .annotation-card').last.locator('.annotation-copy').click()
+                page.wait_for_function("window.__copiedAnnotationText?.includes('PDF page: 1')")
+                pdf_copy = page.evaluate('window.__copiedAnnotationText')
+                assert 'Original file: A field guide to better questions.pdf' in pdf_copy
+                assert '> The best reading starts with a small question.' in pdf_copy
+                assert '> How can I make this a habit?' in pdf_copy
+                assert '> Write one question before opening each paper.' in pdf_copy
+                assert 'Reading is a conversation with an idea.' not in pdf_copy
                 click_mark(page,'comment')
                 expect(page.locator('#annotation-popover')).to_be_visible()
                 expect(page.locator('.popup-comment-text')).to_have_count(2)

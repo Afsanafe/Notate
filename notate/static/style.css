@@ -8,6 +8,10 @@
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation-duration:.01ms!important;transition:none!important}}
 .annotation-mark{pointer-events:none}
 .annotation-mark:focus-visible{outline:2px solid #748e60;outline-offset:2px}
+.annotation-actions{display:flex;align-items:center;gap:2px;margin-left:auto;flex-shrink:0}
+.annotation-card-header .annotation-actions .icon-button{margin-left:0}
+.annotation-card-header .annotation-copy{width:22px;height:22px}
+.annotation-copy:hover{color:var(--accent);background:var(--green-light)}
 
 /* Reading preferences and passage threads. */
 :root{color-scheme:light;--surface:#fbfaf5;--raised:#f0f3e8;--reading-ink:#485044;--accent:#6d855b;--soft-ink:#7c8970;--popup-shadow:0 9px 36px #23341c26}

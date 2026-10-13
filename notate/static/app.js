@@ -28,6 +28,7 @@ const paths = {
   edit:'<path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z"/>',
   move:'<path d="M12 3v18M3 12h18m-12-6 3-3 3 3m-6 12 3 3 3-3M6 9l-3 3 3 3m12-6 3 3-3 3"/>',
   download:'<path d="M12 3v13m-4-4 4 4 4-4M4 17v4h16v-4"/>',
+  copy:'<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
   menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
   moon:'<path d="M20.8 13.3A9 9 0 0 1 10.7 3.2 9 9 0 1 0 20.8 13.3Z"/>',
   sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>'
@@ -756,6 +757,60 @@ async function refreshAnnotations() {
     renderAnnotationPopover();
   }
 }
+function annotationClipboardText(record, item = state.active) {
+  const singleLine = value => String(value ?? '').replace(/[\r\n]+/g,' ');
+  const quoteBlock = value => String(value).replace(/\r\n?/g,'\n').split('\n').map(line => `> ${line}`).join('\n');
+  const folderPath = []; const seen = new Set(); let folderId = item.folder_id;
+  while (folderId && !seen.has(folderId)) {
+    seen.add(folderId); const folder = state.folders.find(folder => folder.id === folderId); if (!folder) break;
+    folderPath.unshift(singleLine(folder.name)); folderId = folder.parent_id;
+  }
+  const labels = {highlight:'Highlight',underline:'Underline',strike:'Strikethrough',comment:'Commented highlight'};
+  const source = ['# Reading annotation','',`Document: ${singleLine(item.title)}`];
+  if (item.filename) source.push(`Original file: ${singleLine(item.filename)}`);
+  source.push(`Folder: ${folderPath.join(' / ') || 'Unfiled'}`);
+  if (record.anchor.type === 'pdf') {
+    const pages = [...new Set(record.anchor.pages.map(page => page.page))].sort((a,b) => a-b);
+    source.push(`PDF ${pages.length === 1 ? 'page' : 'pages'}: ${pages.join(', ')}`);
+  } else source.push(`Location: ${item.kind === 'note' ? 'Note text' : 'Document text'}`);
+  source.push(`Annotation: ${labels[record.kind]}`,`Status: ${record.resolved ? 'Resolved' : 'Open'}`);
+  if (record.orphaned) source.push('Source location: The original passage was edited or removed; the saved quotation is preserved.');
+  source.push('','## Highlighted source text','',quoteBlock(record.quote),'','## My comments and questions (chronological)');
+  if (!record.comments.length) source.push('','No comments or questions recorded.');
+  record.comments.forEach((comment,index) => source.push('',index === 0 ? '### Initial comment or question' : `### Reply ${index}`,'',quoteBlock(comment.body)));
+  return source.join('\n');
+}
+async function writeClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(text); return; } catch { /* Try selection-based copying for local webviews and HTTP LAN clients. */ }
+  }
+  const focused = document.activeElement; const selection = getSelection();
+  const ranges = selection ? Array.from({length:selection.rangeCount},(_,index) => selection.getRangeAt(index).cloneRange()) : [];
+  const field = document.createElement('textarea'); field.value = text; field.readOnly = true;
+  field.setAttribute('aria-hidden','true'); field.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;font-size:16px';
+  document.body.append(field);
+  let copied;
+  try { field.focus({preventScroll:true}); field.select(); field.setSelectionRange(0,text.length); copied = document.execCommand('copy'); }
+  finally {
+    field.remove(); if (focused?.isConnected) focused.focus({preventScroll:true});
+    if (selection) { selection.removeAllRanges(); ranges.forEach(range => { try { selection.addRange(range); } catch { /* The document may have changed while copying. */ } }); }
+  }
+  if (!copied) throw new Error('Clipboard access is unavailable.');
+}
+async function copyAnnotation(record, button) {
+  if (!state.active || record.item_id !== state.active.id) return;
+  const text = annotationClipboardText(record); button.disabled = true;
+  try {
+    await writeClipboard(text);
+    button.innerHTML = icon('check'); button.title = 'Copied passage and thread';
+    toast('Copied passage and thread as Markdown.');
+    setTimeout(() => { if (button.isConnected) { button.innerHTML = icon('copy'); button.title = 'Copy passage and thread for an LLM'; } },1800);
+  } catch {
+    modal('Copy passage and thread','<p>Clipboard access was blocked. Select the text below and press ⌘C / Ctrl+C to copy.</p><label for="annotation-copy-text">Passage and saved comments</label><textarea id="annotation-copy-text" readonly></textarea>','Done');
+    const field = $('#annotation-copy-text'); field.value = text;
+    requestAnimationFrame(() => { field.focus(); field.select(); });
+  } finally { button.disabled = false; }
+}
 function renderAnnotations() {
   $('#annotation-count').textContent = state.annotations.length; $('#all-annotations-count').textContent = state.annotations.filter(record => !record.resolved).length;
   $$('[data-filter]').forEach(button => { const active = button.dataset.filter === state.filter; button.classList.toggle('active',active); button.setAttribute('aria-selected',active); });
@@ -772,8 +827,9 @@ function renderAnnotations() {
     const card = document.createElement('article'); card.className = `annotation-card${state.selected === record.id ? ' selected' : ''}${record.resolved ? ' resolved' : ''}`; card.dataset.annotation = record.id;
     const labels = {highlight:'Highlight',underline:'Underlined',strike:'Strikethrough',comment:'A thought'};
     const location = record.anchor.type === 'pdf' ? ` · p. ${record.anchor.pages.map(page => page.page).join(', ')}` : '';
-    card.innerHTML = `<div class="annotation-card-header">${icon(record.comments.length ? 'comment' : 'highlighter')}<span class="annotation-label">${labels[record.kind]}${location}</span><button class="icon-button annotation-menu" aria-label="Annotation options">${icon('more')}</button></div><button class="annotation-quote ${record.color}" title="Jump to selected passage"><span>${escapeHTML(record.quote.slice(0,350))}${record.quote.length > 350 ? '…' : ''}</span></button>${record.orphaned ? '<div class="orphan-warning">The passage was edited. Your original quote is preserved.</div>' : ''}`;
+    card.innerHTML = `<div class="annotation-card-header">${icon(record.comments.length ? 'comment' : 'highlighter')}<span class="annotation-label">${labels[record.kind]}${location}</span><span class="annotation-actions"><button class="icon-button annotation-copy" aria-label="Copy passage and thread for an LLM" title="Copy passage and thread for an LLM">${icon('copy')}</button><button class="icon-button annotation-menu" aria-label="Annotation options">${icon('more')}</button></span></div><button class="annotation-quote ${record.color}" title="Jump to selected passage"><span>${escapeHTML(record.quote.slice(0,350))}${record.quote.length > 350 ? '…' : ''}</span></button>${record.orphaned ? '<div class="orphan-warning">The passage was edited. Your original quote is preserved.</div>' : ''}`;
     $('.annotation-quote',card).onclick = () => focusAnnotation(record.id,true);
+    $('.annotation-copy',card).onclick = () => copyAnnotation(record,$('.annotation-copy',card));
     $('.annotation-menu',card).onclick = event => menu(event.currentTarget,[{label:'Jump to passage',icon:'book',run:() => focusAnnotation(record.id,true)},null,{label:'Delete annotation',icon:'trash',danger:true,run:() => modal('Delete this annotation?', '<p>The mark and all replies in this thread will be removed.</p>','Delete annotation',async () => { await api(`/api/annotations/${record.id}`,{method:'DELETE'}); await refreshAnnotations(); },{danger:true})}]);
     for (const comment of record.comments) {
       const entry = document.createElement('div'); entry.className = 'comment-entry';
