@@ -53,6 +53,11 @@ class Store:
                     body TEXT NOT NULL, created_at TEXT NOT NULL,
                     kind TEXT NOT NULL DEFAULT 'reply' CHECK(kind IN ('reply', 'answer'))
                 );
+                CREATE TABLE IF NOT EXISTS notepads (
+                    item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+                    markdown TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS items_folder ON items(folder_id);
                 CREATE INDEX IF NOT EXISTS annotations_item ON annotations(item_id);
                 CREATE INDEX IF NOT EXISTS comments_annotation ON comments(annotation_id);
@@ -122,6 +127,11 @@ class Store:
             item = dict(row)
             item["has_pdf"] = bool(item["pdf_path"] or item["kind"] == "pdf")
             return item
+
+    def notepad(self, item_id):
+        with self.connect() as db:
+            row = db.execute('SELECT * FROM notepads WHERE item_id=?', (item_id,)).fetchone()
+            return dict(row) if row else {'item_id': item_id, 'markdown': '', 'revision': 0, 'updated_at': None}
 
     def annotations(self, item_id):
         with self.connect() as db:

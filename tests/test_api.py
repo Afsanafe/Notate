@@ -101,6 +101,62 @@ def test_markdown_note_validation_safe_rendering_and_old_draft_conversion(client
     assert client.get(f'/api/items/{note["id"]}').json()['revision'] == 1
 
 
+@pytest.mark.parametrize('document_kind', ['note', 'pdf'])
+def test_document_notepad_is_independent_persistent_and_synced(client, app, pdf_bytes, document_kind):
+    document = new_note(client) if document_kind == 'note' else client.post('/api/import',files={'file':('reading.pdf',pdf_bytes,'application/pdf')}).json()
+    annotation = text_annotation(client,document['id'],**({'anchor':{'type':'pdf','pages':[{'page':1,'rects':[{'x':.1,'y':.1,'width':.3,'height':.02}]}]}} if document_kind == 'pdf' else {}))
+    path = f'/api/items/{document["id"]}/notepad'
+    assert client.get(path).json() == {'item_id':document['id'],'markdown':'','revision':0,'updated_at':None}
+    source = '# Findings\n\n**Evidence** and *ideas*.\n\n| Topic | Finding |\n| --- | --- |\n| A | B |\n'
+    with client.websocket_connect('/api/events') as socket:
+        socket.receive_json()
+        saved = client.patch(path,json={'revision':0,'markdown':source},headers={'X-Notate-Client':'pad-window'})
+        assert saved.status_code == 200 and saved.json()['markdown'] == source and saved.json()['revision'] == 1
+        event = socket.receive_json()
+        assert event['scope'] == 'notepad' and event['id'] == document['id'] and event['client'] == 'pad-window'
+    assert client.patch(path,json={'revision':0,'markdown':'Stale notepad'}).status_code == 409
+    assert client.get(f'/api/items/{document["id"]}').json() == document
+    assert client.get(f'/api/items/{document["id"]}/annotations').json() == [annotation]
+    with TestClient(create_app(app.state.store.directory)) as restarted:
+        assert restarted.get(path).json()['markdown'] == source
+        exported = restarted.get(f'/api/items/{document["id"]}/export').json()
+        assert exported['notepad']['markdown'] == source and exported['annotations'] == [annotation]
+        assert restarted.patch(path,json={'revision':1,'markdown':''}).json()['revision'] == 2
+    assert client.patch(path,json={'revision':2,'markdown':None}).status_code == 422
+    assert client.patch('/api/items/missing/notepad',json={'revision':0,'markdown':'Draft'}).status_code == 404
+
+
+def test_notepads_migrate_isolate_restore_backups_and_cascade(client, app, tmp_path):
+    first, second = new_note(client), new_note(client,title='Other document')
+    with app.state.store.connect() as db:
+        db.execute('DROP TABLE notepads')
+    with TestClient(create_app(app.state.store.directory)) as migrated:
+        for note, text in ((first,'**First** findings.'),(second,'# Second findings')):
+            response = migrated.patch(f'/api/items/{note["id"]}/notepad',json={'revision':0,'markdown':text})
+            assert response.status_code == 200
+        backup = migrated.get('/api/backup')
+        with zipfile.ZipFile(io.BytesIO(backup.content)) as archive:
+            archive.extractall(tmp_path/'restored-pads')
+        assert migrated.delete(f'/api/items/{first["id"]}').status_code == 200
+        with app.state.store.connect() as db:
+            assert [row['item_id'] for row in db.execute('SELECT item_id FROM notepads')] == [second['id']]
+    with TestClient(create_app(tmp_path/'restored-pads')) as restored:
+        assert restored.get(f'/api/items/{first["id"]}/notepad').json()['markdown'] == '**First** findings.'
+        assert restored.get(f'/api/items/{second["id"]}/notepad').json()['markdown'] == '# Second findings'
+
+
+def test_two_initial_notepad_saves_cannot_overwrite_one_another(client):
+    from concurrent.futures import ThreadPoolExecutor
+    note = new_note(client)
+    path = f'/api/items/{note["id"]}/notepad'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(client.patch,path,json={'revision':0,'markdown':source}) for source in ('First draft','Second draft')]
+        responses = [future.result() for future in futures]
+    assert sorted(response.status_code for response in responses) == [200,409]
+    winning = next(response.json() for response in responses if response.status_code == 200)
+    assert client.get(path).json() == winning
+
+
 def test_nested_folder_cycles_and_nonempty_delete(client):
     root = client.post('/api/folders',json={'name':'Research'}).json()
     child = client.post('/api/folders',json={'name':'Questions','parent_id':root['id']}).json()

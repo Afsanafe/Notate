@@ -1,8 +1,8 @@
 // This file is bundled into static/vendor/note-editor.js. No CDN or build step
 // is needed to run Notate; npm is only used when developing the editor.
-import {EditorState, EditorSelection, StateField, StateEffect, Transaction} from '@codemirror/state';
+import {EditorState, EditorSelection, StateField, StateEffect, Transaction, Prec} from '@codemirror/state';
 import {EditorView, Decoration, WidgetType, keymap, drawSelection, dropCursor, placeholder} from '@codemirror/view';
-import {defaultKeymap, history, historyKeymap, indentWithTab} from '@codemirror/commands';
+import {defaultKeymap, history, historyKeymap, indentWithTab, isolateHistory} from '@codemirror/commands';
 import {syntaxTree} from '@codemirror/language';
 import {markdown} from '@codemirror/lang-markdown';
 import {Table, Strikethrough} from '@lezer/markdown';
@@ -136,32 +136,35 @@ const livePreview = StateField.define({
   provide: field => EditorView.decorations.from(field)
 });
 
-export function createNoteEditor(parent, source, onChange, preview = true) {
+export function createNoteEditor(parent, source, onChange, preview = true, options = {}) {
   let suppressChange = false;
+  parent.classList.add('markdown-editor');
   const view = new EditorView({parent, state: EditorState.create({doc: source, extensions: [
     markdown({extensions: [Table, Strikethrough], completeHTMLTags: false}),
     history(), drawSelection(), dropCursor(), EditorView.lineWrapping,
-    EditorView.contentAttributes.of({'aria-label': 'Note Markdown editor', spellcheck: 'true', autocapitalize: 'sentences'}),
-    placeholder('Start writing… Use # for a heading, **bold**, or the table button above.'),
+    EditorView.contentAttributes.of({'aria-label': options.ariaLabel || 'Note Markdown editor', spellcheck: 'true', autocapitalize: 'sentences'}),
+    placeholder(options.placeholder || 'Start writing… Use # for a heading, **bold**, or the table button above.'),
+    EditorState.transactionFilter.of(transaction => transaction.docChanged && transaction.newDoc.length > (options.maxLength || 5_000_000) ? [] : transaction),
     previewEnabled, livePreview,
-    keymap.of([
+    Prec.high(keymap.of([
       {key: 'Mod-b', run: () => { format('bold'); return true; }},
       {key: 'Mod-i', run: () => { format('italic'); return true; }},
-      ...defaultKeymap, ...historyKeymap, indentWithTab
-    ]),
+      ...(options.onSubmit ? [{key:'Mod-Enter', run: () => { options.onSubmit(); return true; }}] : [])
+    ])),
+    keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
     EditorView.updateListener.of(update => { if (update.docChanged && !suppressChange) onChange(update.state.doc.toString()); })
   ]})});
   if (!preview) view.dispatch({effects: changePreview.of(false)});
   function wrap(marker) {
     const {from, to} = view.state.selection.main, selected = view.state.doc.sliceString(from, to);
-    const text = selected || 'text';
+    const text = selected || ' ';
     const surrounding = view.state.doc.sliceString(Math.max(0, from - marker.length), to + marker.length);
     if (selected && surrounding === marker + selected + marker) {
       view.dispatch({changes: {from: from - marker.length, to: to + marker.length, insert: selected},
-        selection: EditorSelection.single(from - marker.length, to - marker.length), userEvent: 'input'});
+        selection: EditorSelection.single(from - marker.length, to - marker.length), userEvent: 'input', annotations:isolateHistory.of('full')});
     } else {
       view.dispatch({changes: {from, to, insert: marker + text + marker},
-        selection: EditorSelection.single(from + marker.length, from + marker.length + text.length), userEvent: 'input'});
+        selection: EditorSelection.single(from + marker.length, from + marker.length + text.length), userEvent: 'input', annotations:isolateHistory.of('full')});
     }
     view.focus();
   }
@@ -176,7 +179,7 @@ export function createNoteEditor(parent, source, onChange, preview = true) {
       lines.push(prefix + text);
     }
     const insert = lines.join('\n');
-    view.dispatch({changes: {from: first.from, to: last.to, insert}, selection: {anchor: first.from + insert.length}, userEvent: 'input'}); view.focus();
+    view.dispatch({changes: {from: first.from, to: last.to, insert}, selection: {anchor: first.from + insert.length}, userEvent: 'input', annotations:isolateHistory.of('full')}); view.focus();
   }
   return {
     view, format,
@@ -198,7 +201,7 @@ export function createNoteEditor(parent, source, onChange, preview = true) {
       const prefix = before ? before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n' : '';
       const suffix = after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '\n' : '\n\n';
       const insert = prefix + table + suffix;
-      view.dispatch({changes: {from, to, insert}, selection: {anchor: from + prefix.length + table.length + suffix.length}, scrollIntoView: true, userEvent: 'input'}); view.focus();
+      view.dispatch({changes: {from, to, insert}, selection: {anchor: from + prefix.length + table.length + suffix.length}, scrollIntoView: true, userEvent: 'input', annotations:isolateHistory.of('full')}); view.focus();
     },
     focus: () => view.focus(),
     destroy: () => view.destroy()

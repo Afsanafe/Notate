@@ -94,6 +94,11 @@ class LegacyNoteInput(BaseModel):
     content: str = Field(max_length=5_000_000)
 
 
+class NotepadUpdate(BaseModel):
+    revision: int = Field(ge=0)
+    markdown: str = Field(max_length=5_000_000)
+
+
 class SessionInput(BaseModel):
     token: str = Field(max_length=500)
 
@@ -319,6 +324,29 @@ def create_app(data_dir: str | Path, token: str | None = None):
         await hub.publish(request, "item", item_id)
         return public_item(item_or_404(item_id))
 
+    @app.get('/api/items/{item_id}/notepad')
+    def get_notepad(item_id: str):
+        item_or_404(item_id)
+        return store.notepad(item_id)
+
+    @app.patch('/api/items/{item_id}/notepad')
+    async def update_notepad(item_id: str, body: NotepadUpdate, request: Request):
+        with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('SELECT id FROM items WHERE id=?', (item_id,)).fetchone():
+                raise HTTPException(404, 'This document no longer exists. Your notepad draft can be downloaded or saved as a new note.')
+            current = db.execute('SELECT revision FROM notepads WHERE item_id=?', (item_id,)).fetchone()
+            if (current['revision'] if current else 0) != body.revision:
+                raise HTTPException(409, 'This notepad changed in another window. Review the saved version before replacing it.')
+            record = {'item_id': item_id, 'markdown': body.markdown,
+                      'revision': body.revision + 1, 'updated_at': timestamp()}
+            db.execute('''INSERT INTO notepads (item_id,markdown,revision,updated_at)
+                VALUES (:item_id,:markdown,:revision,:updated_at)
+                ON CONFLICT(item_id) DO UPDATE SET markdown=excluded.markdown,
+                    revision=excluded.revision, updated_at=excluded.updated_at''', record)
+        await hub.publish(request, 'notepad', item_id)
+        return record
+
     @app.delete("/api/items/{item_id}")
     async def delete_item(item_id: str, request: Request):
         def remove():
@@ -457,7 +485,7 @@ def create_app(data_dir: str | Path, token: str | None = None):
     @app.get("/api/items/{item_id}/export")
     def export_item(item_id: str):
         item = public_item(item_or_404(item_id))
-        return JSONResponse({"document": item, "annotations": store.annotations(item_id)},
+        return JSONResponse({"document": item, "annotations": store.annotations(item_id), "notepad": store.notepad(item_id)},
                             headers={"Content-Disposition": 'attachment; filename="notate-annotations.json"'})
 
     @app.get("/api/backup")
