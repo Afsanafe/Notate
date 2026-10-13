@@ -16,7 +16,7 @@ Start the web app:
 
 ```sh
 python -m notate serve
-```
+```~
 
 Open **http://127.0.0.1:8765** in your browser.
 
@@ -29,7 +29,19 @@ python -m notate desktop
 
 Desktop mode uses the running server on port 8765. If no server is running, it starts one and stops that server when the desktop window closes. Run `serve` separately to keep the backend available after closing the desktop window. Both interfaces share exactly the same data and features.
 
-On macOS, you can also double-click **Notate Desktop.command** or **Notate Web.command**. These launchers create the virtual environment and install dependencies if needed. In this checkout, dependencies are already installed.
+For a simple launch, run one of these scripts from the project folder:
+
+| Launch | Terminal command | Double-click on macOS |
+| --- | --- | --- |
+| Desktop | `./start_desktop.sh` | **Notate Desktop.command** |
+| Browser | `./start_browser.sh` | **Notate Web.command** |
+| Both | `./start_both.sh` | **Notate Both.command** |
+
+The launchers create the virtual environment and install dependencies if needed. Browser and both modes automatically open your default browser after the backend is ready. All modes reuse an existing Notate backend on the selected port. In this checkout, dependencies are already installed.
+
+Keep the launcher's terminal open when it starts a backend. In browser or both mode, **Ctrl+C** stops that backend; closing the desktop window in both mode keeps the browser working. In desktop-only mode, closing the window stops the backend it started. A launcher that reuses another running backend leaves it running.
+
+You can pass options to any script, for example `./start_both.sh --port 9000 --data-dir /path/to/workspace`. Use the same port for interfaces sharing a backend; if a backend is already running there, its workspace is used. The scripts also work when invoked from another folder.
 
 For only the web app, install with `python -m pip install -e .`. The native window uses [pywebview](https://pywebview.flowrl.com/guide/usage.html): macOS uses WKWebView; Windows requires WebView2; Linux needs a supported GTK or Qt webview runtime. See pywebview's platform installation instructions for your system.
 
@@ -56,6 +68,8 @@ PDF annotations are stored separately from the original file. They persist acros
 **Markdown and text:** Imported as a formatted, selectable reading view. Text files must use UTF-8. Imports are limited to 100 MB per file, and DOCX archives to 200 MB uncompressed.
 
 Image-only PDFs display correctly but require OCR before text can be selected. Locked PDFs must be unlocked before import. OCR and handwriting annotation are not included.
+
+PDFs that open without a password but use AES encryption (often with printing or editing permissions) are supported. The `pypdf[crypto]` dependency includes the required cryptography library. Older installations can update with `python -m pip install -e ".[desktop]"`, then restart the backend; the start scripts also install this dependency when it is missing.
 
 ## Storage, sync, and backups
 

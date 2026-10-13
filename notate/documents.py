@@ -15,6 +15,7 @@ from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 from pypdf import PdfReader
+from pypdf.errors import DependencyError
 
 
 ALLOWED_TAGS = ["p", "br", "strong", "em", "b", "i", "u", "s", "h1", "h2", "h3", "h4",
@@ -36,6 +37,8 @@ def pdf_pages(path):
         if not count:
             raise ValueError("This PDF has no pages.")
         return count
+    except DependencyError as exc:
+        raise ValueError("AES support is missing from this installation. Update Notate's dependencies and restart the app.") from exc
     except ValueError:
         raise
     except Exception as exc:

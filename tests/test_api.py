@@ -6,6 +6,8 @@ import zipfile
 
 from docx import Document
 from fastapi.testclient import TestClient
+from pypdf import PdfReader, PdfWriter
+import pytest
 
 from notate.app import create_app
 
@@ -81,6 +83,44 @@ def test_pdf_bytes_preserved_range_requests_and_anchors(client, pdf_bytes):
     anchor['pages'][0]['page'] = 3
     assert client.post(f'/api/items/{item["id"]}/annotations',json={'kind':'highlight','quote':'text','anchor':anchor}).status_code == 422
     assert client.patch(f'/api/items/{item["id"]}',json={'revision':1,'content':'Replaced'}).status_code == 422
+
+
+@pytest.mark.parametrize('algorithm', ['AES-128', 'AES-256'])
+def test_openable_aes_pdf_imports_without_changing_original(client, pdf_bytes, algorithm):
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf_bytes)))
+    writer.encrypt(user_password='', owner_password='document-owner', algorithm=algorithm)
+    output = io.BytesIO()
+    writer.write(output)
+    encrypted = output.getvalue()
+    response = client.post('/api/import',files={'file':('aes-encrypted.pdf',encrypted,'application/pdf')})
+    assert response.status_code == 201, response.json()
+    item = response.json()
+    assert item['has_pdf'] is True and item['page_count'] == 2
+    assert client.get(f'/api/items/{item["id"]}/file?download=true').content == encrypted
+
+
+def test_aes_pdf_with_opening_password_still_requires_unlocked_copy(client, app, pdf_bytes):
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf_bytes)))
+    writer.encrypt(user_password='opening-password', owner_password='document-owner', algorithm='AES-256')
+    output = io.BytesIO()
+    writer.write(output)
+    response = client.post('/api/import',files={'file':('password-protected.pdf',output.getvalue(),'application/pdf')})
+    assert response.status_code == 422
+    assert 'password protected' in response.json()['detail']
+    assert list(app.state.store.files.iterdir()) == []
+
+
+def test_missing_aes_dependency_has_actionable_error(client, monkeypatch, pdf_bytes):
+    from pypdf.errors import DependencyError
+
+    def missing_crypto(path):
+        raise DependencyError('cryptography is required for AES algorithm')
+
+    monkeypatch.setattr('notate.documents.PdfReader',missing_crypto)
+    response = client.post('/api/import',files={'file':('aes.pdf',pdf_bytes,'application/pdf')})
+    assert response.status_code == 422
+    assert 'AES support is missing' in response.json()['detail']
+    assert 'restart' in response.json()['detail']
 
 
 def test_docx_fallback_preserves_text_formatting_tables(client, monkeypatch):

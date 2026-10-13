@@ -5,6 +5,7 @@ Artifacts are written to .local-data/artifacts; test data is temporary.
 """
 
 import io
+import argparse
 import json
 import os
 import socket
@@ -17,7 +18,7 @@ from pathlib import Path
 import httpx
 from docx import Document
 from playwright.sync_api import sync_playwright, expect
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 
 
@@ -56,7 +57,7 @@ def select_text(page, selector, quote):
     expect(page.locator('#selection-toolbar')).to_be_visible()
 
 
-def run():
+def run(additional_pdf=None):
     ARTIFACTS.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='notate-browser-') as temporary:
         with socket.socket() as socket_handle:
@@ -165,10 +166,41 @@ def run():
                 print('Mobile navigation, reader, and annotation panel work.',flush=True)
                 mobile.close()
 
+                additional_result = None
+                if additional_pdf:
+                    source = Path(additional_pdf).resolve()
+                    page.locator('#file-input').set_input_files(source)
+                    expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible(timeout=15000)
+                    expected_pages = len(PdfReader(source).pages)
+                    expect(page.locator('#total-pages')).to_have_text(str(expected_pages))
+                    page.locator('#current-page').fill(str(expected_pages)); page.locator('#current-page').press('Enter')
+                    expect(page.locator(f'.pdf-page[data-page="{expected_pages}"] .textLayer')).to_be_visible()
+                    page.locator('#current-page').fill('1'); page.locator('#current-page').press('Enter')
+                    expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
+                    # Finish navigation before selecting; a smooth page jump deliberately
+                    # hides annotation tools while the document is moving.
+                    page.locator('#reader').evaluate('''async reader => {
+                      reader.scrollTo({top:0,behavior:'instant'});
+                      await new Promise(requestAnimationFrame);
+                      await new Promise(requestAnimationFrame);
+                    }''')
+                    selected = page.locator('.pdf-page[data-page="1"] .textLayer span').evaluate_all('(spans) => spans.map(span => span.textContent).find(text => text.trim().length > 15)')
+                    assert selected, 'The supplied PDF needs selectable text for this annotation check.'
+                    select_text(page,'.pdf-page[data-page="1"] .textLayer',selected)
+                    page.locator('[data-annotate="comment"]').click(); page.locator('#comment-body').fill('Import verification: this passage is selectable.')
+                    page.locator('#comment-form button[type="submit"]').click()
+                    expect(page.locator('.comment-text')).to_have_text('Import verification: this passage is selectable.')
+                    page.reload(); expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
+                    expect(page.locator('.annotation-mark.comment')).to_have_count(1)
+                    expect(page.locator('.comment-text')).to_have_text('Import verification: this passage is selectable.')
+                    page.screenshot(path=str(ARTIFACTS/'pdf-import.png'),full_page=True)
+                    additional_result = {'filename':source.name,'pages':expected_pages,'annotation_persisted':True}
+                    print(f'{source.name}: imported {expected_pages} pages; first/last pages render, text selects, and comments persist.',flush=True)
+
                 assert not outside_requests, outside_requests
                 assert not errors, errors
                 browser.close()
-                (ARTIFACTS/'browser-results.json').write_text(json.dumps({'status':'passed','pdf_first_open_seconds':round(pdf_open,2),'browser_errors':errors,'external_requests':outside_requests},indent=2))
+                (ARTIFACTS/'browser-results.json').write_text(json.dumps({'status':'passed','pdf_first_open_seconds':round(pdf_open,2),'browser_errors':errors,'external_requests':outside_requests,'additional_pdf':additional_result},indent=2))
                 print('No browser errors or external asset requests. Browser checks passed.',flush=True)
         finally:
             process.terminate()
@@ -177,4 +209,6 @@ def run():
 
 
 if __name__ == '__main__':
-    run()
+    parser = argparse.ArgumentParser(description='Check the Notate web UI in an isolated workspace.')
+    parser.add_argument('--pdf',type=Path,help='Also check import, rendering, and annotations on this PDF.')
+    run(parser.parse_args().pdf)
