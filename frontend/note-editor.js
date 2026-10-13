@@ -3,7 +3,7 @@
 import {EditorState, EditorSelection, StateField, StateEffect, Transaction, Prec, Facet, Compartment} from '@codemirror/state';
 import {EditorView, Decoration, WidgetType, keymap, drawSelection, dropCursor, placeholder} from '@codemirror/view';
 import {defaultKeymap, history, historyKeymap, indentWithTab, isolateHistory, insertNewline} from '@codemirror/commands';
-import {syntaxTree, ensureSyntaxTree} from '@codemirror/language';
+import {syntaxTree, ensureSyntaxTree, indentUnit} from '@codemirror/language';
 import {markdown, insertNewlineContinueMarkup} from '@codemirror/lang-markdown';
 import {Table, Strikethrough} from '@lezer/markdown';
 import MarkdownIt from 'markdown-it';
@@ -37,22 +37,42 @@ const previewEnabled = StateField.define({
 
 function styleInlineAnswers(container) {
   container.querySelectorAll('strong').forEach(label => {
-    if (label.textContent !== 'Answ:') return;
+    const kind = {'Answ:':'answer','Answer:':'answer','Question:':'question','For Example:':'example'}[label.textContent];
+    if (!kind) return;
     let sibling = label.nextSibling;
     while (sibling?.nodeType === Node.TEXT_NODE && !sibling.textContent.trim()) sibling = sibling.nextSibling;
-    if (sibling?.nodeName === 'EM') { label.classList.add('md-answer-label'); sibling.classList.add('md-answer-text'); }
+    if (sibling?.nodeName === 'EM') { label.classList.add(`md-${kind}-label`); sibling.classList.add(`md-${kind}-text`); }
   });
 }
-function isAnswerLabel(state, node) {
-  return node?.name === 'StrongEmphasis' && /^(?:\*\*Answ:\*\*|__Answ:__)$/.test(state.doc.sliceString(node.from,node.to));
+function templateLabel(state, node) {
+  if (node?.name !== 'StrongEmphasis') return null;
+  const match = /^(?:\*\*|__)(Answer|Answ|Question|For Example):(?:\*\*|__)$/.exec(state.doc.sliceString(node.from,node.to));
+  return match ? {'Answer':'answer','Answ':'answer','Question':'question','For Example':'example'}[match[1]] : null;
 }
-function isAnswerText(state, node) {
+function templateBody(state, node) {
+  if (node.name !== 'Emphasis') return null;
   const label = node.node.prevSibling;
-  return node.name === 'Emphasis' && isAnswerLabel(state,label) && /^[ \t]*$/.test(state.doc.sliceString(label.to,node.from));
+  const kind = templateLabel(state,label);
+  if (kind && kind !== 'example' && /^[ \t]*$/.test(state.doc.sliceString(label.to,node.from))) return kind;
+  const paragraph = node.node.parent;
+  if (paragraph?.name === 'Paragraph' && templateLabel(state,paragraph.firstChild) === 'example'
+      && /^\s*[-+*] /.test(state.doc.lineAt(node.from).text)) return 'example';
+  return null;
 }
+function listDepth(node) {
+  let depth = -1;
+  for (let parent = node.node.parent; parent; parent = parent.parent) if (['BulletList','OrderedList'].includes(parent.name)) depth++;
+  return Math.max(0,depth);
+}
+function indentationColumns(text) { let columns = 0; for (const character of text) columns += character === '\t' ? 4 - columns % 4 : 1; return columns; }
 
 class Bullet extends WidgetType {
-  toDOM() { const span = document.createElement('span'); span.className = 'md-bullet'; span.textContent = '•'; return span; }
+  constructor(depth) { super(); this.depth = depth; }
+  eq(other) { return this.depth === other.depth; }
+  toDOM() {
+    const span = document.createElement('span'); span.className = 'md-bullet'; span.dataset.listDepth = this.depth;
+    span.textContent = ['•','◦','▪'][this.depth % 3]; span.setAttribute('aria-hidden','true'); return span;
+  }
 }
 
 class TablePreview extends WidgetType {
@@ -117,7 +137,15 @@ function liveDecorations(state) {
       if (preview) { hide(from,passage.start); hide(passage.end,to); }
     }
     if (!preview) return;
-    const answerLabel = isAnswerLabel(state,node), answerText = isAnswerText(state,node);
+    const labelKind = templateLabel(state,node), bodyKind = templateBody(state,node);
+    if (labelKind === 'example' && node.node.parent?.name === 'Paragraph') {
+      for (let number = state.doc.lineAt(to).number + 1; number <= state.doc.lineAt(node.node.parent.to).number; number++) {
+        const line = state.doc.line(number), bullet = /^([ \t]+)[-+*] /.exec(line.text);
+        if (!bullet) continue;
+        const position = line.from + bullet[1].length;
+        ranges.push(Decoration.replace({widget:new Bullet(Math.floor(indentationColumns(bullet[1])/4))}).range(position,position+1));
+      }
+    }
     if (name === 'Table' && active(from, to)) {
       for (let number = state.doc.lineAt(from).number; number <= state.doc.lineAt(to).number; number++) lineStyle(state.doc.line(number).from, 'md-table-source');
     }
@@ -162,17 +190,16 @@ function liveDecorations(state) {
     if (name === 'FencedCode' || name === 'CodeBlock') {
       for (let number = state.doc.lineAt(from).number; number <= state.doc.lineAt(to).number; number++) lineStyle(state.doc.line(number).from, 'md-code-block');
     }
-    // Answer text keeps its color and emphasis while the current line exposes
-    // Markdown syntax for editing, as well as after that line is completed.
-    if (answerLabel) mark(from,to,'md-strong md-answer-label','strong');
-    if (answerText) mark(from,to,'md-emphasis md-answer-text','em');
+    if (labelKind) mark(from,to,`md-strong md-${labelKind}-label`,'strong');
+    if (bodyKind) mark(from,to,`md-emphasis md-${bodyKind}-text`,'em');
+    if (name === 'ListMark' && /^[*+-]$/.test(state.doc.sliceString(from,to))) {
+      ranges.push(Decoration.replace({widget:new Bullet(listDepth(node))}).range(from,to));
+    }
     if (active(from, to)) return;
     if (name === 'HeaderMark' || name === 'QuoteMark') {
       hide(from, to + (state.doc.sliceString(to, to + 1) === ' ' ? 1 : 0));
-    } else if (name === 'ListMark' && /^[*+-]$/.test(state.doc.sliceString(from, to))) {
-      ranges.push(Decoration.replace({widget: new Bullet()}).range(from, to));
-    } else if (name === 'StrongEmphasis' && !answerLabel) mark(from, to, 'md-strong', 'strong');
-    else if (name === 'Emphasis' && !answerText) mark(from, to, 'md-emphasis', 'em');
+    } else if (name === 'StrongEmphasis' && !labelKind) mark(from, to, 'md-strong', 'strong');
+    else if (name === 'Emphasis' && !bodyKind) mark(from, to, 'md-emphasis', 'em');
     else if (name === 'Strikethrough') mark(from, to, 'md-strike', 's');
     else if (name === 'InlineCode') mark(from, to, 'md-inline-code', 'code');
     else if (name === 'EmphasisMark' || name === 'StrikethroughMark' || name === 'CodeMark') hide(from, to);
@@ -198,6 +225,7 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
   parent.classList.add('markdown-editor');
   const view = new EditorView({parent, state: EditorState.create({doc: source, extensions: [
     markdown({extensions: [Table, Strikethrough], completeHTMLTags: false}),
+    indentUnit.of('\t'), EditorState.tabSize.of(4),
     history(), drawSelection(), dropCursor(), EditorView.lineWrapping,
     editing.of([EditorState.readOnly.of(false), EditorView.editable.of(true)]),
     EditorView.contentAttributes.of({'aria-label': options.ariaLabel || 'Note Markdown editor', spellcheck: 'true', autocapitalize: 'sentences'}),
@@ -209,11 +237,19 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
       pointerdown: (event, editor) => event.button === 0 && activatePassageLink(editor,event),
       keydown: (event, editor) => (event.key === 'Enter' || event.key === ' ') && activatePassageLink(editor,event)
     }),
+    // Some platforms report Shift+E as lowercase e, and synthetic native
+    // events may omit keyCode. Handle Shift explicitly before letter fallback.
+    Prec.high(EditorView.domEventHandlers({keydown: event => {
+      if (event.altKey || !(event.metaKey || event.ctrlKey) || !event.shiftKey || event.key.toLowerCase() !== 'e') return false;
+      event.preventDefault(); insertTemplate('example'); return true;
+    }})),
     Prec.high(keymap.of([
       {key: 'Mod-b', run: () => { format('bold'); return true; }},
       {key: 'Mod-i', run: () => { format('italic'); return true; }},
       {key: 'Mod-e', run: () => { insertAnswer(); return true; }},
-      {key: 'Enter', run: finishAnswerLine},
+      {key: 'Mod-m', run: () => { insertTemplate('question'); return true; }},
+      {key: 'Mod-Shift-e', run: () => { insertTemplate('example'); return true; }},
+      {key: 'Enter', run: finishTemplateLine},
       ...(options.onSubmit ? [{key:'Mod-Enter', run: () => { options.onSubmit(); return true; }}] : [])
     ])),
     keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
@@ -250,30 +286,59 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     const insert = lines.join('\n');
     view.dispatch({changes: {from: first.from, to: last.to, insert}, selection: {anchor: first.from + insert.length}, userEvent: 'input', annotations:isolateHistory.of('full')}); view.focus();
   }
-  function insertAnswer() {
+  function insertAnswer() { insertTemplate('answer'); }
+  function insertTemplate(kind) {
     if (view.state.readOnly) return;
     const {from, to} = view.state.selection.main;
     const selected = view.state.doc.sliceString(from,to), text = selected || ' ';
-    const prefix = '**Answ:** *';
-    view.dispatch({changes:{from,to,insert:prefix+text+'*'},
+    const before = view.state.doc.sliceString(0,from), after = view.state.doc.sliceString(to);
+    const gap = kind !== 'example' || !before || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+    const prefix = gap + (kind === 'example' ? '**For Example:**\n\t- *' : kind === 'question' ? '**Question:** *' : '**Answer:** *');
+    const suffix = kind !== 'example' || !after || after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '\n' : '\n\n';
+    view.dispatch({changes:{from,to,insert:prefix+text+'*'+suffix},
       selection:selected ? {anchor:from+prefix.length+text.length}
         : EditorSelection.single(from+prefix.length,from+prefix.length+text.length),
       userEvent:'input',annotations:isolateHistory.of('full')});
     view.focus();
   }
-  function finishAnswerLine() {
+  function finishTemplateLine() {
     const selection = view.state.selection.main;
     if (!selection.empty) return false;
+    const line = view.state.doc.lineAt(selection.head), exampleBullet = /^([ \t]+)[-+*] (.*)$/.exec(line.text);
+    let example = false;
+    if (exampleBullet && selection.head === line.to) {
+      for (let number = line.number - 1; number >= 1; number--) {
+        const previous = view.state.doc.line(number).text;
+        if (/^(?:\*\*For Example:\*\*|__For Example:__)$/.test(previous)) { example = true; break; }
+        if (!/^[ \t]+/.test(previous) || !previous.trim()) break;
+      }
+      let context = syntaxTree(view.state).resolveInner(selection.head,-1);
+      while (context) { if (['FencedCode','CodeBlock'].includes(context.name)) example = false; context = context.parent; }
+      if (example && !exampleBullet[2].trim()) {
+        view.dispatch({changes:{from:line.from,to:line.to,insert:'\n'},selection:{anchor:line.from+1},userEvent:'input'}); return true;
+      }
+    }
     let node = syntaxTree(view.state).resolveInner(selection.head,-1);
     while (node && node.name !== 'Emphasis') node = node.parent;
-    if (!node || !isAnswerText(view.state,node) || selection.head !== node.to-1) return false;
+    const kind = node && templateBody(view.state,node);
+    if (!kind || selection.head !== node.to-1) {
+      if (example) {
+        const insert = '\n'+exampleBullet[1]+'- ';
+        view.dispatch({changes:{from:line.to,insert},selection:{anchor:line.to+insert.length},userEvent:'input'}); return true;
+      }
+      return false;
+    }
     // Typing at the end of the inserted answer then pressing Enter finishes
     // its italic span and starts a normal line (including list continuation).
     view.dispatch({selection:{anchor:node.to}});
+    if (kind === 'example') {
+      const indent = /^[ \t]*/.exec(view.state.doc.lineAt(node.from).text)[0]; const insert = '\n'+indent+'- ';
+      view.dispatch({changes:{from:node.to,insert},selection:{anchor:node.to+insert.length},userEvent:'input'}); return true;
+    }
     return insertNewlineContinueMarkup(view) || insertNewline(view);
   }
   return {
-    view, format, insertAnswer,
+    view, format, insertAnswer, insertTemplate,
     setReadOnly: value => view.dispatch({effects: editing.reconfigure([EditorState.readOnly.of(value), EditorView.editable.of(!value)])}),
     getSource: () => view.state.doc.toString(),
     getPassageLinks: () => passageLinks(view.state),

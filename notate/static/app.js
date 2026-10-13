@@ -62,7 +62,7 @@ let notepadEditor = null;
 const layout = {
   navigationCollapsed: readLocal('notate-navigation-collapsed', false) === true,
   notesWidth: readLocal('notate-notes-width', null),
-  drag: null, hideNavigationTimer: null, resizeTimer: null
+  drag: null, resizeTimer: null
 };
 if (!Number.isFinite(layout.notesWidth)) layout.notesWidth = null;
 icons();
@@ -88,22 +88,18 @@ function toast(message, error = false) {
 function updateNavigationLayout() {
   const shell = $('.app-shell'); const sidebar = $('#sidebar'); const mobile = innerWidth <= 640;
   shell.classList.toggle('nav-collapsed', layout.navigationCollapsed);
-  const visible = mobile ? sidebar.classList.contains('open') : !layout.navigationCollapsed || shell.classList.contains('nav-peek');
+  const visible = mobile ? sidebar.classList.contains('open') : !layout.navigationCollapsed;
   sidebar.inert = !visible; sidebar.setAttribute('aria-hidden', !visible);
   const toggle = $('#sidebar-toggle'); const collapse = $('#sidebar-collapse');
   toggle.setAttribute('aria-expanded', visible);
   toggle.title = toggle.ariaLabel = (mobile ? visible : !layout.navigationCollapsed) ? 'Hide navigation' : 'Show navigation';
-  const pin = !mobile && layout.navigationCollapsed;
-  collapse.title = collapse.ariaLabel = pin ? 'Keep navigation open' : 'Hide navigation';
-  collapse.innerHTML = icon(pin ? 'right' : 'left');
-  $('#sidebar-edge').hidden = mobile || !layout.navigationCollapsed;
-  $('#sidebar-edge').setAttribute('aria-expanded', visible);
+  collapse.title = collapse.ariaLabel = 'Hide navigation';
+  collapse.innerHTML = icon('left');
 }
 function closeNavigationDrawer() {
-  clearTimeout(layout.hideNavigationTimer);
   const sidebar = $('#sidebar');
   if ((innerWidth <= 640 || layout.navigationCollapsed) && sidebar.contains(document.activeElement)) $('#sidebar-toggle').focus();
-  sidebar.classList.remove('open'); $('.app-shell').classList.remove('nav-peek'); updateNavigationLayout();
+  sidebar.classList.remove('open'); updateNavigationLayout();
 }
 function setNavigationCollapsed(collapsed) {
   closeNavigationDrawer();
@@ -112,16 +108,8 @@ function setNavigationCollapsed(collapsed) {
   updateNavigationLayout(); updatePaneWidth(); scheduleReaderLayout();
 }
 function revealNavigation() {
-  clearTimeout(layout.hideNavigationTimer);
   if (innerWidth <= 640) $('#sidebar').classList.add('open');
-  else if (layout.navigationCollapsed) $('.app-shell').classList.add('nav-peek');
   updateNavigationLayout();
-}
-function scheduleNavigationClose() {
-  clearTimeout(layout.hideNavigationTimer);
-  layout.hideNavigationTimer = setTimeout(() => {
-    if (!$('#sidebar').matches(':hover') && !$('#sidebar-edge').matches(':hover') && !$('#sidebar').contains(document.activeElement) && $('#floating-menu').hidden && !$('#modal').open) closeNavigationDrawer();
-  },220);
 }
 function paneWidthLimits() {
   return {min: 240, max: Math.max(240, Math.min(720, $('#reading-workspace').clientWidth - 360 - 8))};
@@ -1378,13 +1366,6 @@ $('#sidebar-toggle').onclick = () => {
   else if ($('#sidebar').classList.contains('open')) closeNavigationDrawer(); else revealNavigation();
 };
 $('#sidebar-collapse').onclick = () => innerWidth <= 640 ? closeNavigationDrawer() : setNavigationCollapsed(!layout.navigationCollapsed);
-$('#sidebar-edge').addEventListener('pointerenter', revealNavigation);
-$('#sidebar-edge').addEventListener('pointerleave', scheduleNavigationClose);
-$('#sidebar-edge').onclick = revealNavigation;
-$('#sidebar-edge').onfocus = revealNavigation;
-$('#sidebar').addEventListener('pointerenter', () => clearTimeout(layout.hideNavigationTimer));
-$('#sidebar').addEventListener('pointerleave', scheduleNavigationClose);
-$('#sidebar').addEventListener('focusout', scheduleNavigationClose);
 $('#panel-resizer').addEventListener('pointerdown', event => {
   if (event.button !== 0 || !event.isPrimary || innerWidth <= 860) return;
   event.preventDefault(); hideSelection(); getSelection().removeAllRanges();
@@ -1477,13 +1458,13 @@ document.addEventListener('pointerdown',event => {
   if (!event.target.closest('#notepad-editor,#notepad-selection-toolbar,#notepad-link')) $('#notepad-selection-toolbar').hidden = true;
   if (!event.target.closest('#floating-menu,#selection-color,.annotation-menu,.folder-menu,#document-menu')) $('#floating-menu').hidden = true;
   if (!event.target.closest('#selection-toolbar,#comment-popover,#reader')) hideSelection();
-  if (!event.target.closest('#sidebar,#sidebar-toggle,#sidebar-edge,#floating-menu,#modal')) closeNavigationDrawer();
+  if (!event.target.closest('#sidebar,#sidebar-toggle,#floating-menu,#modal')) closeNavigationDrawer();
   if (!event.target.closest('#annotation-popover,#reader,#toggle-popups,#theme-toggle,.annotation-quote')) closeAnnotationPopover();
 });
 document.addEventListener('keydown',event => {
   if (event.key === 'Escape') { cancelPadLink(); hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; closeNavigationDrawer(); finishPaneResize(); }
   if (!(event.metaKey || event.ctrlKey)) return;
-  if (event.key.toLowerCase() === 'k') { event.preventDefault(); revealNavigation(); $('#search').focus(); }
+  if (event.key.toLowerCase() === 'k') { event.preventDefault(); ($('#sidebar').inert ? $('#sidebar-toggle') : $('#search')).focus(); }
   if (event.key.toLowerCase() === 's') { event.preventDefault(); saveNote(); saveNotepad(); }
   if (event.key.toLowerCase() === 'n' && !$('#modal').open) { event.preventDefault(); newNoteDialog(); }
 });

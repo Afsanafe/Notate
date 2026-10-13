@@ -52,9 +52,7 @@ def run():
                 wait_for("!!document.querySelector('.pdf-page .textLayer span') && document.querySelector('.pdf-page').getBoundingClientRect().width < window.__layoutPDFWidth")
                 window.evaluate_js("window.__layoutReaderWidth = document.querySelector('#reader').getBoundingClientRect().width; document.querySelector('#sidebar-collapse').click()")
                 wait_for("getComputedStyle(document.querySelector('#sidebar')).display === 'none' && document.querySelector('#reader').getBoundingClientRect().width > window.__layoutReaderWidth + 200")
-                window.evaluate_js("window.__expandedReaderWidth = document.querySelector('#reader').getBoundingClientRect().width; document.querySelector('#sidebar-edge').dispatchEvent(new PointerEvent('pointerenter',{clientX:2,clientY:400}))")
-                wait_for("getComputedStyle(document.querySelector('#sidebar')).display === 'flex' && document.querySelector('#reader').getBoundingClientRect().width === window.__expandedReaderWidth")
-                window.evaluate_js("document.querySelector('#sidebar-toggle').click(); document.querySelector('#panel-resizer').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))")
+                window.evaluate_js("document.elementFromPoint(2,400).dispatchEvent(new PointerEvent('pointerenter',{clientX:2,clientY:400})); document.querySelector('#sidebar-toggle').click(); document.querySelector('#panel-resizer').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))")
                 wait_for("!document.querySelector('.app-shell').classList.contains('nav-collapsed') && document.querySelector('#annotations-panel').getBoundingClientRect().width === window.__layoutNotesWidth")
                 wait_for("!!document.querySelector('.pdf-page .textLayer span')")
                 results['workspace_layout'] = 'passed'
@@ -203,9 +201,9 @@ def run():
                 window.evaluate_js("document.querySelector('#note-editor .cm-content').focus(); document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'e',code:'KeyE',metaKey:true,bubbles:true,cancelable:true})); document.execCommand('insertText',false,'A useful finding.')")
                 wait_for("document.querySelector('#note-editor .md-answer-text')?.textContent.includes('A useful finding.')")
                 window.evaluate_js("document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,cancelable:true}))")
-                wait_for("document.querySelector('#note-editor .md-answer-label')?.textContent === 'Answ:'")
+                wait_for("document.querySelector('#note-editor .md-answer-label')?.textContent === 'Answer:'")
                 wait_for("document.querySelector('#save-state').textContent === 'Saved locally'")
-                assert httpx.get(url+f'/api/items/{answer_id}').json()['markdown'] == '**Answ:** *A useful finding.*\n'
+                assert httpx.get(url+f'/api/items/{answer_id}').json()['markdown'] == '**Answer:** *A useful finding.*\n'
                 window.evaluate_js("document.querySelector('#read-mode').click()")
                 wait_for("document.querySelector('#note-content .md-answer-text')?.textContent === 'A useful finding.'")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-answer-text')).color") == 'rgb(159, 201, 243)'
@@ -213,6 +211,29 @@ def run():
                 wait_for("document.documentElement.dataset.theme === 'light'")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-answer-text')).color") == 'rgb(35, 79, 135)'
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-answer-text')).fontWeight") == '400'
+                template_note = httpx.post(url+'/api/notes',json={'title':'Native question and example','markdown':''}).json()
+                template_id = template_note['id']
+                wait_for(f"!!document.querySelector('.file-card[data-id=\"{template_id}\"]')")
+                window.evaluate_js(f"document.querySelector('.file-card[data-id=\"{template_id}\"]').click()")
+                wait_for("document.querySelector('#document-title').textContent === 'Native question and example'")
+                window.evaluate_js("document.querySelector('#edit-mode').click()")
+                wait_for("!!document.querySelector('#note-editor .cm-content')")
+                window.evaluate_js("document.querySelector('#note-editor .cm-content').focus(); document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'m',code:'KeyM',metaKey:true,bubbles:true,cancelable:true})); document.execCommand('insertText',false,'Why does this work?')")
+                wait_for("document.querySelector('#note-editor .md-question-text')?.textContent.includes('Why does this work?')")
+                window.evaluate_js("document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,cancelable:true})); document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'E',code:'KeyE',metaKey:true,shiftKey:true,bubbles:true,cancelable:true})); document.execCommand('insertText',false,'A practical example.')")
+                wait_for("document.querySelector('#note-editor .md-example-text')?.textContent.includes('A practical example.')")
+                window.evaluate_js("document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,cancelable:true})); document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,cancelable:true}))")
+                wait_for("document.querySelector('#note-editor .md-question-label')?.textContent === 'Question:' && document.querySelector('#note-editor .md-example-label')?.textContent === 'For Example:'")
+                assert window.evaluate_js("document.querySelector('#note-editor .md-bullet').textContent") == '◦'
+                wait_for("document.querySelector('#save-state').textContent === 'Saved locally'")
+                assert httpx.get(url+f'/api/items/{template_id}').json()['markdown'] == '**Question:** *Why does this work?*\n\n**For Example:**\n\t- *A practical example.*\n\n'
+                window.evaluate_js("document.querySelector('#read-mode').click()")
+                wait_for("document.querySelector('#note-content .md-question-text')?.textContent === 'Why does this work?'")
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-question-text')).color") == 'rgb(152, 107, 0)'
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content ul')).listStyleType") == 'circle'
+                window.evaluate_js("document.querySelector('#theme-toggle').click()")
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-question-text')).color") == 'rgb(241, 205, 103)'
+                results['question_example_shortcuts'] = 'passed'
                 results.update(status='passed',native_engine='macOS WKWebView',pdf_text_selection=True,comment_saved_in_shared_backend=True,
                                dark_mode=True,contained_selection=True,passage_popup_reply=True,popup_toggle=True,copy_markdown=True,markdown_preview=True,answer_types=True,
                                note_markdown_live_preview=True,note_tables=True,comment_live_editing=True,command_shortcuts=True,document_notepad=True,inline_answer_shortcut=True)

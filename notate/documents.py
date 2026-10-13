@@ -2,6 +2,7 @@
 
 import base64
 import html
+import re
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ import markdown
 from markdown.extensions import Extension
 from markdown.inlinepatterns import SimpleTagInlineProcessor
 from markdown.treeprocessors import Treeprocessor
+from markdown.preprocessors import Preprocessor
 from markdownify import MarkdownConverter
 from docx import Document
 from docx.oxml.ns import qn
@@ -31,8 +33,11 @@ ALLOWED_TAGS = ["p", "br", "strong", "em", "b", "i", "u", "s", "h1", "h2", "h3",
 def note_attribute(tag, name, value):
     if tag == 'a' and name in {'href', 'title'}:
         return True
-    return name == 'class' and ((tag == 'strong' and value == 'md-answer-label')
-                                or (tag == 'em' and value == 'md-answer-text'))
+    return name == 'class' and ((tag == 'strong' and value in {'md-answer-label','md-question-label','md-example-label'})
+        or (tag == 'em' and value in {'md-answer-text','md-question-text','md-example-text'})
+        or (tag == 'ul' and value in {'md-list-disc','md-list-circle','md-list-square',
+                                     'md-list-disc md-example-list', 'md-list-circle md-example-list',
+                                     'md-list-square md-example-list'}))
 
 
 def clean_note(value):
@@ -45,21 +50,60 @@ class StrikeExtension(Extension):
         md.inlinePatterns.register(SimpleTagInlineProcessor(r'(~~)(.+?)~~', 's'), 'strikethrough', 175)
 
 
+class ExampleListPreprocessor(Preprocessor):
+    def run(self, lines):
+        # Render the requested tab-indented example as a list. Only the render
+        # input changes; the saved Markdown retains its exact newline and tab.
+        result = []; index = 0
+        while index < len(lines):
+            line = lines[index]; result.append(line); index += 1
+            if not re.fullmatch(r'(?:\*\*For Example:\*\*|__For Example:__)\s*', line):
+                continue
+            if index >= len(lines) or not re.match(r'^(?:\t| {4})[-+*] ', lines[index]):
+                continue
+            result.append('')
+            while index < len(lines) and re.match(r'^(?:\t| {4})', lines[index]) and lines[index].strip():
+                result.append(lines[index][1:] if lines[index].startswith('\t') else lines[index][4:])
+                index += 1
+            # A blank line alone can merge adjacent Markdown lists. This render-
+            # only HTML boundary is removed by clean_note's comment sanitizer.
+            result.extend(['', '<!--notate-example-end-->', ''])
+        return result
+
+
 class InlineAnswerProcessor(Treeprocessor):
     def run(self, root):
-        # The shortcut uses ordinary Markdown: **Answ:** *answer*. Add only
+        # The shortcuts use ordinary Markdown. Add only
         # presentation classes; source text and annotation offsets stay intact.
         for parent in root.iter():
             children = list(parent)
             for label, answer in zip(children, children[1:]):
-                if (label.tag == 'strong' and ''.join(label.itertext()) == 'Answ:'
-                        and not (label.tail or '').strip() and answer.tag == 'em'):
-                    label.set('class', 'md-answer-label')
-                    answer.set('class', 'md-answer-text')
+                kind = {'Answ:':'answer','Answer:':'answer','Question:':'question'}.get(''.join(label.itertext()))
+                if label.tag == 'strong' and kind and not (label.tail or '').strip() and answer.tag == 'em':
+                    label.set('class', f'md-{kind}-label')
+                    answer.set('class', f'md-{kind}-text')
+            for label in children:
+                if label.tag == 'strong' and ''.join(label.itertext()) == 'For Example:':
+                    label.set('class','md-example-label')
+        def lists(parent, depth=0):
+            children = list(parent)
+            for index, child in enumerate(children):
+                example = (child.tag == 'ul' and index > 0 and children[index-1].tag == 'p'
+                           and ''.join(children[index-1].itertext()).strip() == 'For Example:')
+                level = depth + int(example)
+                if child.tag == 'ul':
+                    child.set('class', ['md-list-disc','md-list-circle','md-list-square'][level % 3]
+                              + (' md-example-list' if example else ''))
+                    if example:
+                        for text in child.iter('em'):
+                            if text.get('class') is None: text.set('class','md-example-text')
+                lists(child, level + 1 if child.tag in {'ul','ol'} else depth)
+        lists(root)
 
 
 class InlineAnswerExtension(Extension):
     def extendMarkdown(self, md):
+        md.preprocessors.register(ExampleListPreprocessor(md), 'example_list', 24)
         md.treeprocessors.register(InlineAnswerProcessor(md), 'inline_answer', 5)
 
 

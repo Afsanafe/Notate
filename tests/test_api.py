@@ -101,10 +101,11 @@ def test_markdown_note_validation_safe_rendering_and_old_draft_conversion(client
     assert client.get(f'/api/items/{note["id"]}').json()['revision'] == 1
 
 
-def test_inline_answer_markdown_is_preserved_in_notes_comments_imports_and_exports(client, app):
-    source = '**Answ:** *Evidence explains this.* and *ordinary italics*.'
+@pytest.mark.parametrize('label', ['Answ', 'Answer'])
+def test_inline_answer_markdown_is_preserved_in_notes_comments_imports_and_exports(client, app, label):
+    source = f'**{label}:** *Evidence explains this.* and *ordinary italics*.'
     rendered = client.post('/api/markdown/preview',json={'body':source}).json()['html']
-    assert '<strong class="md-answer-label">Answ:</strong>' in rendered
+    assert f'<strong class="md-answer-label">{label}:</strong>' in rendered
     assert '<em class="md-answer-text">Evidence explains this.</em>' in rendered
     assert '<em>ordinary italics</em>' in rendered
     note = client.post('/api/notes',json={'title':'Inline answers','markdown':source}).json()
@@ -127,6 +128,27 @@ def test_inline_answer_styling_is_scoped_and_preserves_html_sanitization(client)
     html = client.post('/api/markdown/preview',json={'body':source}).json()['html']
     assert 'md-answer-text' in html and 'href="https://example.com"' in html
     assert 'arbitrary' not in html and 'style=' not in html and 'onclick=' not in html and '<script' not in html
+
+
+def test_question_example_and_nested_bullets_render_and_persist(client):
+    source = '**Question:** *Why does this work?*\n\n**For Example:**\n\t- *A finding.*\n\t\t- *More evidence.*\n\n- Parent\n\t- Child\n\t\t- Grandchild'
+    note = client.post('/api/notes',json={'title':'Questions and examples','markdown':source}).json()
+    assert note['markdown'] == source
+    html = note['content']
+    assert '<strong class="md-question-label">Question:</strong>' in html
+    assert '<em class="md-question-text">Why does this work?</em>' in html
+    assert '<strong class="md-example-label">For Example:</strong>' in html
+    assert '<em class="md-example-text">A finding.</em>' in html
+    assert '<ul class="md-list-circle md-example-list">' in html
+    assert '<ul class="md-list-disc">' in html and '<ul class="md-list-square">' in html
+    comment = text_annotation(client,note['id'],comment=source)['comments'][0]
+    assert comment['body'] == source and comment['html'] == html
+    imported = client.post('/api/import',files={'file':('templates.md',source.encode(),'text/markdown')}).json()
+    assert imported['content'] == html
+    literal = client.post('/api/markdown/preview',json={'body':'```\n'+source+'\n```'}).json()['html']
+    assert 'md-question-text' not in literal and 'md-example-text' not in literal
+    unsafe = client.post('/api/markdown/preview',json={'body':'<em class="md-question-text arbitrary" style="color:red">Unsafe</em>'}).json()['html']
+    assert 'arbitrary' not in unsafe and 'style=' not in unsafe
 
 
 @pytest.mark.parametrize('document_kind', ['note', 'pdf'])
@@ -313,7 +335,7 @@ def test_answer_type_markdown_changes_persist_sync_and_export(client, app):
     body = '**Finding:** evidence helps.\n\n- Observe\n- Compare\n\n`result = 2`'
     answer = client.post(f'/api/annotations/{annotation["id"]}/comments',json={'body':body,'kind':'answer'}).json()
     assert answer['kind'] == 'answer' and answer['body'] == body
-    assert '<strong>Finding:</strong>' in answer['html'] and '<ul>' in answer['html'] and '<code>result = 2</code>' in answer['html']
+    assert '<strong>Finding:</strong>' in answer['html'] and '<ul class="md-list-disc">' in answer['html'] and '<code>result = 2</code>' in answer['html']
     with client.websocket_connect('/api/events') as socket:
         socket.receive_json()
         changed = client.patch(f'/api/comments/{answer["id"]}',json={'kind':'reply'},headers={'X-Notate-Client':'other-window'})
