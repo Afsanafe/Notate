@@ -43,6 +43,22 @@ def run():
                 window.evaluate_js(f"document.querySelector('.file-card[data-id=\"{item_id}\"]').click()")
                 wait_for("!!document.querySelector('.pdf-page .textLayer span')")
                 window.evaluate_js('''(() => {
+                  window.__layoutNotesWidth = document.querySelector('#annotations-panel').getBoundingClientRect().width;
+                  window.__layoutPDFWidth = document.querySelector('.pdf-page').getBoundingClientRect().width;
+                  const divider = document.querySelector('#panel-resizer'); divider.focus();
+                  divider.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',shiftKey:true,bubbles:true,cancelable:true}));
+                })()''')
+                wait_for("document.querySelector('#annotations-panel').getBoundingClientRect().width === window.__layoutNotesWidth + 40")
+                wait_for("!!document.querySelector('.pdf-page .textLayer span') && document.querySelector('.pdf-page').getBoundingClientRect().width < window.__layoutPDFWidth")
+                window.evaluate_js("window.__layoutReaderWidth = document.querySelector('#reader').getBoundingClientRect().width; document.querySelector('#sidebar-collapse').click()")
+                wait_for("getComputedStyle(document.querySelector('#sidebar')).display === 'none' && document.querySelector('#reader').getBoundingClientRect().width > window.__layoutReaderWidth + 200")
+                window.evaluate_js("window.__expandedReaderWidth = document.querySelector('#reader').getBoundingClientRect().width; document.querySelector('#sidebar-edge').dispatchEvent(new PointerEvent('pointerenter',{clientX:2,clientY:400}))")
+                wait_for("getComputedStyle(document.querySelector('#sidebar')).display === 'flex' && document.querySelector('#reader').getBoundingClientRect().width === window.__expandedReaderWidth")
+                window.evaluate_js("document.querySelector('#sidebar-toggle').click(); document.querySelector('#panel-resizer').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))")
+                wait_for("!document.querySelector('.app-shell').classList.contains('nav-collapsed') && document.querySelector('#annotations-panel').getBoundingClientRect().width === window.__layoutNotesWidth")
+                wait_for("!!document.querySelector('.pdf-page .textLayer span')")
+                results['workspace_layout'] = 'passed'
+                window.evaluate_js('''(() => {
                   const container = document.querySelector('.pdf-page .textLayer');
                   const walker = document.createTreeWalker(container,NodeFilter.SHOW_TEXT);
                   const quote = 'Reading is a conversation with an idea.';

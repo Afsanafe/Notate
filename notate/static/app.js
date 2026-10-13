@@ -56,6 +56,12 @@ const state = {
 };
 let noteEditor = null;
 let notepadEditor = null;
+const layout = {
+  navigationCollapsed: readLocal('notate-navigation-collapsed', false) === true,
+  notesWidth: readLocal('notate-notes-width', null),
+  drag: null, hideNavigationTimer: null, resizeTimer: null
+};
+if (!Number.isFinite(layout.notesWidth)) layout.notesWidth = null;
 icons();
 function setTheme(theme, remember = true) {
   document.documentElement.dataset.theme = theme;
@@ -75,6 +81,82 @@ setTheme(document.documentElement.dataset.theme || 'light', false);
 function toast(message, error = false) {
   const node = $('#toast'); node.textContent = message; node.classList.toggle('error', error); node.hidden = false;
   clearTimeout(state.toastTimer); state.toastTimer = setTimeout(() => { node.hidden = true; }, error ? 6500 : 3500);
+}
+function updateNavigationLayout() {
+  const shell = $('.app-shell'); const sidebar = $('#sidebar'); const mobile = innerWidth <= 640;
+  shell.classList.toggle('nav-collapsed', layout.navigationCollapsed);
+  const visible = mobile ? sidebar.classList.contains('open') : !layout.navigationCollapsed || shell.classList.contains('nav-peek');
+  sidebar.inert = !visible; sidebar.setAttribute('aria-hidden', !visible);
+  const toggle = $('#sidebar-toggle'); const collapse = $('#sidebar-collapse');
+  toggle.setAttribute('aria-expanded', visible);
+  toggle.title = toggle.ariaLabel = (mobile ? visible : !layout.navigationCollapsed) ? 'Hide navigation' : 'Show navigation';
+  const pin = !mobile && layout.navigationCollapsed;
+  collapse.title = collapse.ariaLabel = pin ? 'Keep navigation open' : 'Hide navigation';
+  collapse.innerHTML = icon(pin ? 'right' : 'left');
+  $('#sidebar-edge').hidden = mobile || !layout.navigationCollapsed;
+  $('#sidebar-edge').setAttribute('aria-expanded', visible);
+}
+function closeNavigationDrawer() {
+  clearTimeout(layout.hideNavigationTimer);
+  const sidebar = $('#sidebar');
+  if ((innerWidth <= 640 || layout.navigationCollapsed) && sidebar.contains(document.activeElement)) $('#sidebar-toggle').focus();
+  sidebar.classList.remove('open'); $('.app-shell').classList.remove('nav-peek'); updateNavigationLayout();
+}
+function setNavigationCollapsed(collapsed) {
+  closeNavigationDrawer();
+  if (collapsed && $('#sidebar').contains(document.activeElement)) $('#sidebar-toggle').focus();
+  layout.navigationCollapsed = collapsed; writeLocal('notate-navigation-collapsed', collapsed);
+  updateNavigationLayout(); updatePaneWidth(); scheduleReaderLayout();
+}
+function revealNavigation() {
+  clearTimeout(layout.hideNavigationTimer);
+  if (innerWidth <= 640) $('#sidebar').classList.add('open');
+  else if (layout.navigationCollapsed) $('.app-shell').classList.add('nav-peek');
+  updateNavigationLayout();
+}
+function scheduleNavigationClose() {
+  clearTimeout(layout.hideNavigationTimer);
+  layout.hideNavigationTimer = setTimeout(() => {
+    if (!$('#sidebar').matches(':hover') && !$('#sidebar-edge').matches(':hover') && !$('#sidebar').contains(document.activeElement) && $('#floating-menu').hidden && !$('#modal').open) closeNavigationDrawer();
+  },220);
+}
+function paneWidthLimits() {
+  return {min: 240, max: Math.max(240, Math.min(720, $('#reading-workspace').clientWidth - 360 - 8))};
+}
+function updatePaneWidth() {
+  const workspace = $('#reading-workspace'); const divider = $('#panel-resizer');
+  const defaults = innerWidth >= 1600 ? 320 : innerWidth <= 1000 ? 250 : innerWidth <= 1250 ? 258 : 286;
+  const {min, max} = paneWidthLimits(); const width = Math.round(Math.min(max, Math.max(min, layout.notesWidth ?? defaults)));
+  workspace.style.setProperty('--notes-panel-width', `${width}px`);
+  divider.setAttribute('aria-valuemin', min); divider.setAttribute('aria-valuemax', max); divider.setAttribute('aria-valuenow', width);
+  divider.setAttribute('aria-valuetext', `${width} pixels for Notes & discoveries`);
+  const available = innerWidth > 860 && !workspace.classList.contains('panel-hidden');
+  divider.tabIndex = available ? 0 : -1; divider.setAttribute('aria-hidden', !available);
+  schedulePopupPosition();
+  return width;
+}
+function resizeNotesPane(width, remember = false) {
+  const {min, max} = paneWidthLimits(); layout.notesWidth = Math.round(Math.min(max, Math.max(min, width)));
+  updatePaneWidth();
+  if (remember) { writeLocal('notate-notes-width', layout.notesWidth); scheduleReaderLayout(true); }
+}
+function finishPaneResize() {
+  const drag = layout.drag; if (!drag) return;
+  layout.drag = null; document.body.classList.remove('resizing-panels');
+  const divider = $('#panel-resizer'); if (divider.hasPointerCapture(drag.pointerId)) divider.releasePointerCapture(drag.pointerId);
+  writeLocal('notate-notes-width', layout.notesWidth); scheduleReaderLayout(true);
+}
+function scheduleReaderLayout(immediate = false) {
+  clearTimeout(layout.resizeTimer);
+  if (layout.drag) { schedulePopupPosition(); return; }
+  const reflow = () => {
+    if (state.pdf && !state.zoom) {
+      const width = fittedPDFWidth();
+      if (Math.abs(width - state.pdfBase.width * state.pdfScale) > 1) { hideSelection(); buildPDFPages(); }
+    } else if (!state.pdf) renderTextMarks();
+    noteEditor?.view.requestMeasure(); notepadEditor?.view.requestMeasure(); schedulePopupPosition();
+  };
+  if (immediate) reflow(); else layout.resizeTimer = setTimeout(reflow,150);
 }
 async function api(path, options = {}) {
   const headers = {'X-Notate-Client': state.client, ...options.headers};
@@ -283,7 +365,7 @@ function resetReader() {
   closeAnnotationPopover(); state.popupTarget = null; state.popupMatches = [];
 }
 async function openItem(id, edit = false, force = false) {
-  if (state.active?.id === id && !force) { if (edit) setEditMode(true); $('#sidebar').classList.remove('open'); return; }
+  if (state.active?.id === id && !force) { if (edit) setEditMode(true); closeNavigationDrawer(); return; }
   if (!await flushNote()) return;
   const opening = ++state.opening;
   const [item, annotations] = await Promise.all([api(`/api/items/${id}`),api(`/api/items/${id}/annotations`)]);
@@ -304,7 +386,7 @@ async function openItem(id, edit = false, force = false) {
   }
   state.recent = [id,...state.recent.filter(value => value !== id)].slice(0,50); writeLocal('notate-recent',state.recent); writeLocal('notate-active',id);
   renderHeading(); renderNavigation(); renderAnnotations(); updateSaveState();
-  $('#sidebar').classList.remove('open'); $('#reader').scrollTop = 0;
+  closeNavigationDrawer(); $('#reader').scrollTop = 0;
   if (item.has_pdf) { $('#reader').innerHTML = '<div class="loading"><span class="spinner"></span>Opening your document…</div>'; await renderPDF(item,opening); }
   else renderText(item,edit);
   if (state.conflict) showConflictNotice();
@@ -537,11 +619,17 @@ async function renderPDF(item, opening) {
     $('#retry-pdf').onclick = action(() => openItem(item.id,false,true));
   }
 }
+function fittedPDFWidth() {
+  const reader = $('#reader'); const style = getComputedStyle(reader);
+  return Math.min(850, Math.max(180, reader.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)));
+}
 function buildPDFPages() {
   if (!state.pdf) return;
-  const reader = $('#reader'); state.observer?.disconnect(); state.renderGeneration++; state.renderQueue = [];
-  const available = reader.clientWidth - (innerWidth < 641 ? 22 : 42);
-  const width = state.zoom ? state.pdfBase.width*state.zoom : Math.min(850, Math.max(180,available));
+  const reader = $('#reader'); const top = reader.getBoundingClientRect().top + 40;
+  const visible = $$('.pdf-page',reader).find(page => page.getBoundingClientRect().bottom > top);
+  const position = visible ? {page: visible.dataset.page, fraction: (reader.scrollTop - visible.offsetTop) / visible.offsetHeight, atTop: reader.scrollTop < 1} : null;
+  state.observer?.disconnect(); state.renderGeneration++; state.renderQueue = [];
+  const width = state.zoom ? state.pdfBase.width*state.zoom : fittedPDFWidth();
   const scale = width/state.pdfBase.width; state.pdfScale = scale; $('#zoom-fit').textContent = state.zoom ? `${Math.round(scale*100)}%` : 'Fit';
   const fragment = document.createDocumentFragment();
   for (let number = 1; number <= state.pdf.numPages; number++) {
@@ -551,12 +639,19 @@ function buildPDFPages() {
     page.innerHTML = `<div class="page-placeholder">Page ${number}</div><div class="annotation-layer"></div>`; fragment.append(page);
   }
   reader.replaceChildren(fragment);
+  if (position) {
+    const page = $(`.pdf-page[data-page="${position.page}"]`,reader);
+    const behavior = reader.style.scrollBehavior; reader.style.scrollBehavior = 'auto';
+    reader.scrollTop = position.atTop ? 0 : page.offsetTop + position.fraction * page.offsetHeight;
+    reader.style.scrollBehavior = behavior;
+    state.page = Number(position.page); $('#current-page').value = state.page;
+  }
   state.observer = new IntersectionObserver(entries => {
     for (const entry of entries) if (entry.isIntersecting) queuePage(entry.target);
   },{root:reader,rootMargin:'600px 0px'});
   $$('.pdf-page',reader).forEach(page => state.observer.observe(page));
-  queuePage($('.pdf-page',reader)); renderPDFMarks();
-  if (state.page > 1) goToPage(state.page);
+  queuePage($(`.pdf-page[data-page="${state.page}"]`,reader)); renderPDFMarks();
+  if (!position && state.page > 1) goToPage(state.page);
   schedulePopupPosition();
 }
 function queuePage(element) {
@@ -946,9 +1041,9 @@ function renderAnnotationPopover() {
   $('.popup-thread',box).scrollTop = scroll; positionAnnotationPopover();
 }
 function openPanel() {
-  const workspace = $('#reading-workspace'); const wasHidden = workspace.classList.contains('panel-hidden');
+  const workspace = $('#reading-workspace');
   workspace.classList.remove('panel-hidden'); workspace.classList.add('panel-mobile-open');
-  if (wasHidden && innerWidth > 860 && state.pdf && !state.zoom) buildPDFPages();
+  updatePaneWidth(); scheduleReaderLayout(true);
 }
 function focusAnnotation(id, scrollDocument = false, options = {}) {
   if (state.editing && scrollDocument) {
@@ -1136,6 +1231,14 @@ window.addEventListener('storage',event => {
     state.popupPreferences = readLocal('notate-popup-preferences',{}); updatePopupToggle();
     if (!popupsEnabled()) closeAnnotationPopover();
   }
+  if (event.key === 'notate-navigation-collapsed') {
+    layout.navigationCollapsed = readLocal('notate-navigation-collapsed', false) === true;
+    closeNavigationDrawer(); updatePaneWidth(); scheduleReaderLayout();
+  }
+  if (event.key === 'notate-notes-width' && !layout.drag) {
+    const width = readLocal('notate-notes-width', null); layout.notesWidth = Number.isFinite(width) ? width : null;
+    updatePaneWidth(); scheduleReaderLayout();
+  }
 });
 for (const id of ['import','sidebar-import']) $(`#${id}`).onclick = () => $('#file-input').click();
 $('#file-input').onchange = action(async event => { const files = [...event.target.files]; event.target.value = ''; await importFiles(files); });
@@ -1146,11 +1249,43 @@ $('#toggle-annotations').onclick = () => {
   const workspace = $('#reading-workspace');
   if (innerWidth <= 860) workspace.classList.toggle('panel-mobile-open');
   else workspace.classList.toggle('panel-hidden');
-  setTimeout(() => { if (state.pdf && !state.zoom) buildPDFPages(); else renderTextMarks(); },0);
+  updatePaneWidth(); scheduleReaderLayout(true);
 };
-$('#close-annotations').onclick = () => { $('#reading-workspace').classList.add('panel-hidden'); $('#reading-workspace').classList.remove('panel-mobile-open'); if (state.pdf && !state.zoom) buildPDFPages(); else requestAnimationFrame(renderTextMarks); };
+$('#close-annotations').onclick = () => { $('#reading-workspace').classList.add('panel-hidden'); $('#reading-workspace').classList.remove('panel-mobile-open'); updatePaneWidth(); scheduleReaderLayout(true); };
 $$('[data-filter]').forEach(button => { button.onclick = () => { state.filter = button.dataset.filter; renderAnnotations(); }; });
-$('#sidebar-toggle').onclick = () => $('#sidebar').classList.toggle('open');
+$('#sidebar-toggle').onclick = () => {
+  if (innerWidth > 640) setNavigationCollapsed(!layout.navigationCollapsed);
+  else if ($('#sidebar').classList.contains('open')) closeNavigationDrawer(); else revealNavigation();
+};
+$('#sidebar-collapse').onclick = () => innerWidth <= 640 ? closeNavigationDrawer() : setNavigationCollapsed(!layout.navigationCollapsed);
+$('#sidebar-edge').addEventListener('pointerenter', revealNavigation);
+$('#sidebar-edge').addEventListener('pointerleave', scheduleNavigationClose);
+$('#sidebar-edge').onclick = revealNavigation;
+$('#sidebar-edge').onfocus = revealNavigation;
+$('#sidebar').addEventListener('pointerenter', () => clearTimeout(layout.hideNavigationTimer));
+$('#sidebar').addEventListener('pointerleave', scheduleNavigationClose);
+$('#sidebar').addEventListener('focusout', scheduleNavigationClose);
+$('#panel-resizer').addEventListener('pointerdown', event => {
+  if (event.button !== 0 || !event.isPrimary || innerWidth <= 860) return;
+  event.preventDefault(); hideSelection(); getSelection().removeAllRanges();
+  layout.drag = {pointerId: event.pointerId, startX: event.clientX, startWidth: $('#annotations-panel').getBoundingClientRect().width};
+  clearTimeout(layout.resizeTimer); document.body.classList.add('resizing-panels');
+  event.currentTarget.setPointerCapture(event.pointerId); event.currentTarget.focus();
+});
+$('#panel-resizer').addEventListener('pointermove', event => {
+  if (layout.drag?.pointerId === event.pointerId) resizeNotesPane(layout.drag.startWidth + layout.drag.startX - event.clientX);
+});
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) $('#panel-resizer').addEventListener(type, event => {
+  if (layout.drag?.pointerId === event.pointerId) finishPaneResize();
+});
+$('#panel-resizer').addEventListener('keydown', event => {
+  const {min, max} = paneWidthLimits(); const current = $('#annotations-panel').getBoundingClientRect().width; const step = event.shiftKey ? 40 : 10;
+  const width = {ArrowLeft: current + step, ArrowRight: current - step, Home: min, End: max}[event.key];
+  if (width === undefined) return; event.preventDefault(); resizeNotesPane(width, true);
+});
+$('#panel-resizer').ondblclick = () => {
+  layout.notesWidth = null; writeLocal('notate-notes-width', null); updatePaneWidth(); scheduleReaderLayout(true);
+};
 $('#previous-page').onclick = () => goToPage(state.page-1); $('#next-page').onclick = () => goToPage(state.page+1);
 $('#current-page').onchange = event => goToPage(Number(event.target.value) || 1);
 $('#zoom-out').onclick = () => zoomPDF(-1); $('#zoom-in').onclick = () => zoomPDF(1); $('#zoom-fit').onclick = () => zoomPDF(0);
@@ -1215,23 +1350,34 @@ $('#reader').addEventListener('scroll',() => {
 document.addEventListener('pointerdown',event => {
   if (!event.target.closest('#floating-menu,#selection-color,.annotation-menu,.folder-menu,#document-menu')) $('#floating-menu').hidden = true;
   if (!event.target.closest('#selection-toolbar,#comment-popover,#reader')) hideSelection();
-  if (!event.target.closest('#sidebar,#sidebar-toggle')) $('#sidebar').classList.remove('open');
+  if (!event.target.closest('#sidebar,#sidebar-toggle,#sidebar-edge,#floating-menu,#modal')) closeNavigationDrawer();
   if (!event.target.closest('#annotation-popover,#reader,#toggle-popups,#theme-toggle,.annotation-quote')) closeAnnotationPopover();
 });
 document.addEventListener('keydown',event => {
-  if (event.key === 'Escape') { hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; $('#sidebar').classList.remove('open'); }
+  if (event.key === 'Escape') { hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; closeNavigationDrawer(); finishPaneResize(); }
   if (!(event.metaKey || event.ctrlKey)) return;
-  if (event.key.toLowerCase() === 'k') { event.preventDefault(); $('#sidebar').classList.add('open'); $('#search').focus(); }
+  if (event.key.toLowerCase() === 'k') { event.preventDefault(); revealNavigation(); $('#search').focus(); }
   if (event.key.toLowerCase() === 's') { event.preventDefault(); saveNote(); saveNotepad(); }
   if (event.key.toLowerCase() === 'n' && !$('#modal').open) { event.preventDefault(); newNoteDialog(); }
 });
 window.addEventListener('beforeunload',event => { if (state.dirty || state.notepad?.dirty) { event.preventDefault(); event.returnValue = ''; } });
 document.addEventListener('visibilitychange',() => { if (document.hidden) { if (state.dirty) saveNote(); if (state.notepad?.dirty) saveNotepad(); } else if (state.loaded && state.connected) synchronize().catch(() => {}); });
-let resizeTimer; window.addEventListener('resize',() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { hideSelection(); if (state.pdf && !state.zoom) buildPDFPages(); else renderTextMarks(); schedulePopupPosition(); },200); });
-new ResizeObserver(() => { if (!state.pdf) requestAnimationFrame(renderTextMarks); }).observe($('#reader'));
+let mobileNavigation = innerWidth <= 640;
+window.addEventListener('resize',() => {
+  hideSelection();
+  if (innerWidth <= 860) finishPaneResize();
+  if (mobileNavigation !== (innerWidth <= 640)) { mobileNavigation = innerWidth <= 640; closeNavigationDrawer(); }
+  updateNavigationLayout(); updatePaneWidth(); scheduleReaderLayout();
+});
+let observedReaderWidth = 0;
+new ResizeObserver(entries => {
+  const width = entries[0].contentRect.width;
+  if (Math.abs(width - observedReaderWidth) > .5) { observedReaderWidth = width; hideSelection(); scheduleReaderLayout(); }
+}).observe($('#reader'));
 let dragDepth = 0;
 document.addEventListener('dragenter',event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth++; $('#drop-overlay').hidden = false; } });
 document.addEventListener('dragleave',() => { dragDepth = Math.max(0,dragDepth-1); if (!dragDepth) $('#drop-overlay').hidden = true; });
 document.addEventListener('dragover',event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } });
 document.addEventListener('drop',action(async event => { event.preventDefault(); dragDepth = 0; $('#drop-overlay').hidden = true; await importFiles([...event.dataTransfer.files]); }));
+updateNavigationLayout(); updatePaneWidth();
 boot();

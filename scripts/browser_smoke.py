@@ -64,6 +64,107 @@ def click_mark(page, kind, segment=0):
     page.mouse.click(bounds['x']+bounds['width']*.55,bounds['y']+bounds['height']*.5)
 
 
+def check_workspace_layout(page):
+    divider = page.locator('#panel-resizer')
+    notes = page.locator('#annotations-panel')
+    reader = page.locator('#reader')
+    first_page = page.locator('.pdf-page[data-page="1"]')
+    expect(divider).to_be_visible()
+    original_width = notes.bounding_box()['width']
+    original_pdf_width = first_page.bounding_box()['width']
+    draft = page.locator('.reply-form').last.locator('.cm-content')
+    draft.fill('Keep this unposted draft through layout changes.')
+    page.evaluate('window.__layoutCanvas = document.querySelector(".pdf-page canvas")')
+    handle = divider.bounding_box(); x = handle['x'] + handle['width']/2; y = handle['y'] + handle['height']/2
+    page.mouse.move(x,y); page.mouse.down(); page.mouse.move(x-140,y,steps=12)
+    assert abs(notes.bounding_box()['width'] - original_width - 140) < 2
+    assert page.evaluate('window.__layoutCanvas === document.querySelector(".pdf-page canvas")'), 'PDF canvases should stay intact while dragging.'
+    page.mouse.up()
+    expect(first_page.locator('.textLayer')).to_be_visible()
+    assert first_page.bounding_box()['width'] < original_pdf_width - 100
+    expect(page.locator('body')).not_to_have_class('resizing-panels')
+    expect(draft).to_contain_text('Keep this unposted draft')
+    expect(page.locator('.annotation-mark.comment')).to_have_count(1)
+    click_mark(page,'comment'); expect(page.locator('#annotation-popover')).to_be_visible()
+    expect(page.locator('.popup-comment-text')).to_have_count(2)
+    page.keyboard.press('Escape')
+    page.screenshot(path=str(ARTIFACTS/'resizable-workspace.png'),full_page=True)
+    draft.fill('')
+
+    # Preserve the actual point being read, including a partly scrolled page.
+    page.locator('#current-page').fill('6'); page.locator('#current-page').press('Enter')
+    expect(page.locator('.pdf-page[data-page="6"] .textLayer')).to_be_visible()
+    page.wait_for_function('document.querySelector("#current-page").value === "6" && Math.abs(document.querySelector(".pdf-page[data-page=\\"6\\"]").getBoundingClientRect().top - document.querySelector("#reader").getBoundingClientRect().top) < 3')
+    page.evaluate('''() => {
+      const reader = document.querySelector('#reader'), paper = document.querySelector('.pdf-page[data-page="6"]');
+      reader.style.scrollBehavior = 'auto'; reader.scrollTop = paper.offsetTop + paper.offsetHeight * .18; reader.style.scrollBehavior = '';
+    }''')
+    divider.focus(); divider.press('Shift+ArrowLeft')
+    expect(page.locator('.pdf-page[data-page="6"] .textLayer')).to_be_visible()
+    expect(page.locator('#current-page')).to_have_value('6')
+    fraction = page.evaluate('''() => {
+      const reader = document.querySelector('#reader'), paper = document.querySelector('.pdf-page[data-page="6"]');
+      return (reader.scrollTop-paper.offsetTop)/paper.offsetHeight;
+    }''')
+    assert abs(fraction-.18) < .015, fraction
+
+    # Hide navigation to reclaim width; hovering reveals a temporary overlay.
+    old_reader_width = reader.bounding_box()['width']
+    page.locator('#sidebar-collapse').click()
+    expect(page.locator('#sidebar')).to_be_hidden()
+    assert reader.bounding_box()['width'] > old_reader_width + 200
+    expect(page.locator('.pdf-page[data-page="6"] .textLayer')).to_be_visible()
+    expect(page.locator('#current-page')).to_have_value('6')
+    expanded_width = reader.bounding_box()['width']
+    page.mouse.move(3,480)
+    expect(page.locator('#sidebar')).to_be_visible()
+    assert abs(reader.bounding_box()['width'] - expanded_width) < 2
+    page.mouse.move(100,400); expect(page.locator('#sidebar')).to_be_visible()
+    page.mouse.move(800,500); expect(page.locator('#sidebar')).to_be_hidden()
+    page.keyboard.press('ControlOrMeta+k'); expect(page.locator('#search')).to_be_focused()
+    page.mouse.move(800,550); page.wait_for_timeout(300)
+    expect(page.locator('#sidebar')).to_be_visible()
+    page.keyboard.press('Escape'); expect(page.locator('#sidebar')).to_be_hidden()
+    expect(page.locator('#sidebar-toggle')).to_be_focused()
+
+    saved_width = notes.bounding_box()['width']
+    page.reload(); expect(first_page.locator('.textLayer')).to_be_visible()
+    expect(page.locator('#sidebar')).to_be_hidden()
+    assert abs(notes.bounding_box()['width'] - saved_width) < 2
+    page.mouse.move(3,480); expect(page.locator('#sidebar')).to_be_visible()
+    expect(page.locator('#sidebar-collapse')).to_have_attribute('aria-label','Keep navigation open')
+    page.screenshot(path=str(ARTIFACTS/'navigation-edge-drawer.png'),full_page=True)
+    page.locator('#sidebar-collapse').click()
+    expect(page.locator('.app-shell')).not_to_have_class('nav-collapsed')
+    page.mouse.move(800,500); expect(page.locator('#sidebar')).to_be_visible()
+
+    # Bounds prevent an unusable reader and adapt when the viewport shrinks.
+    divider.focus(); divider.press('End')
+    assert notes.bounding_box()['width'] <= 720
+    assert page.locator('#reader-column').bounding_box()['width'] >= 359
+    page.set_viewport_size({'width':950,'height':982})
+    expect(first_page.locator('.textLayer')).to_be_visible()
+    assert page.locator('#reader-column').bounding_box()['width'] >= 359
+    assert page.evaluate('document.documentElement.scrollWidth') <= 950
+    page.set_viewport_size({'width':1512,'height':982})
+    divider.focus(); divider.press('Home')
+    expect(divider).to_have_attribute('aria-valuenow','240')
+    divider.dblclick()
+    assert abs(notes.bounding_box()['width'] - original_width) < 2
+    expect(first_page.locator('.textLayer')).to_be_visible()
+    page.locator('#close-annotations').click(); expect(divider).to_be_hidden()
+    page.locator('#toggle-annotations').click(); expect(divider).to_be_visible()
+    expect(first_page.locator('.textLayer')).to_be_visible()
+    # Explicit zoom must survive layout changes.
+    page.locator('#zoom-in').click(); expect(first_page.locator('.textLayer')).to_be_visible()
+    zoom_width = first_page.bounding_box()['width']
+    divider.focus(); divider.press('Shift+ArrowLeft')
+    assert abs(first_page.bounding_box()['width'] - zoom_width) < 2
+    page.locator('#zoom-fit').click(); expect(first_page.locator('.textLayer')).to_be_visible()
+    divider.dblclick(); expect(first_page.locator('.textLayer')).to_be_visible()
+    print('Resizable reader, drag performance, page-position preservation, layout persistence, navigation edge hover, and keyboard controls work.',flush=True)
+
+
 def check_markdown_editor(page, url):
     page.locator('#new-note').click(); page.locator('#note-title').fill('Markdown live preview')
     page.locator('#modal-submit').click()
@@ -633,6 +734,7 @@ def run(additional_pdf=None):
                 page.locator('#comment-form button[type="submit"]').click(); expect(page.locator('.comment-text')).to_have_text('How can I make this a habit?')
                 page.locator('.reply-form').last.locator('.cm-content').fill('Write one question before opening each paper.'); page.locator('.reply-form').last.locator('button[type="submit"]').click()
                 expect(page.locator('.comment-text')).to_have_count(2)
+                check_workspace_layout(page)
                 before = page.locator('.annotation-mark.comment').evaluate('(node) => node.getBoundingClientRect().width')
                 page.locator('#zoom-in').click(); expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
                 after = page.locator('.annotation-mark.comment').evaluate('(node) => node.getBoundingClientRect().width')
