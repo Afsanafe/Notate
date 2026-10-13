@@ -534,10 +534,10 @@ function showSelectionToolbar() {
   position(toolbar,Math.max(rect.left,rect.left+(rect.width-toolbar.offsetWidth)/2),y);
 }
 function hideSelection() { $('#selection-toolbar').hidden = true; }
-async function annotate(kind, comment = null) {
+async function annotate(kind, comment = null, commentKind = 'reply') {
   const selected = state.selection; if (!selected || state.active?.id !== selected.itemId) return;
   if (!await flushNote()) return;
-  const record = await api(`/api/items/${selected.itemId}/annotations`,{method:'POST',body:{kind,color:state.color,quote:selected.quote,anchor:selected.anchor,comment}});
+  const record = await api(`/api/items/${selected.itemId}/annotations`,{method:'POST',body:{kind,color:state.color,quote:selected.quote,anchor:selected.anchor,comment,comment_kind:commentKind}});
   state.annotations.push(record); state.selected = record.id; state.filter = 'all';
   hideSelection(); getSelection().removeAllRanges(); $('#comment-popover').hidden = true; state.selection = null;
   renderAnnotations(); renderMarks(); await refreshWorkspace();
@@ -549,9 +549,11 @@ function openCommentComposer() {
   const toolbar = $('#selection-toolbar').getBoundingClientRect(); hideSelection();
   closeAnnotationPopover();
   const box = $('#comment-popover'); box.hidden = false; $('#comment-quote').textContent = state.selection.quote;
-  $('#comment-body').value = ''; position(box,toolbar.left,toolbar.bottom+8); $('#comment-body').focus();
+  $('#comment-body').value = ''; $('#comment-form').setEntryKind('reply'); $('#comment-body').dispatchEvent(new Event('input'));
+  position(box,toolbar.left,toolbar.bottom+8); $('#comment-body').focus();
 }
-$('#comment-form').onsubmit = action(async event => { event.preventDefault(); const button = $('button[type="submit"]',event.currentTarget); button.disabled = true; try { await annotate('comment',$('#comment-body').value); } finally { button.disabled = false; } });
+$('#comment-form').onsubmit = action(async event => { event.preventDefault(); const button = $('button[type="submit"]',event.currentTarget); button.disabled = true; try { await annotate('comment',$('#comment-body').value,event.currentTarget.dataset.kind || 'reply'); } finally { button.disabled = false; } });
+setupMarkdownComposer($('#comment-form'));
 $('#close-comment').onclick = () => { $('#comment-popover').hidden = true; };
 $('#comment-body').onkeydown = event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); $('#comment-form').requestSubmit(); } };
 $$('[data-annotate]').forEach(button => { button.onmousedown = event => event.preventDefault(); button.onclick = action(() => button.dataset.annotate === 'comment' ? openCommentComposer() : annotate(button.dataset.annotate)); });
@@ -690,6 +692,61 @@ function positionAnnotationPopover() {
   box.style.setProperty('--anchor-offset',`${Math.min(width-18,Math.max(18,center-left))}px`);
   box.dataset.placement = placeAbove ? 'above' : 'below';
 }
+function entryTypeSwitch(kind = 'reply', saved = false) {
+  return `<div class="entry-type-switch ${saved ? 'saved-kind-switch' : 'composer-kind-switch'}" role="group" aria-label="${saved ? 'Entry type' : 'Post type'}"><button type="button" data-entry-kind="reply" aria-pressed="${kind !== 'answer'}">Reply</button><button type="button" data-entry-kind="answer" aria-pressed="${kind === 'answer'}">Answer</button></div>`;
+}
+function commentMarkup(comment, popup = false) {
+  const kind = comment.kind === 'answer' ? 'answer' : 'reply';
+  const html = comment.html ?? `<p>${escapeHTML(comment.body).replace(/\n/g,'<br>')}</p>`;
+  return `<div class="comment-entry ${kind}" data-comment="${comment.id}"><div class="comment-author"><span class="comment-avatar">Y</span><span>You</span>${entryTypeSwitch(kind,true)}<time datetime="${escapeHTML(comment.created_at)}" title="${escapeHTML(new Date(comment.created_at).toLocaleString())}">${age(comment.created_at,true)}</time></div><div class="${popup ? 'popup-comment-text' : 'comment-text'} markdown-body">${html}</div></div>`;
+}
+function bindCommentTypes(root) {
+  $$('.comment-entry[data-comment]',root).forEach(entry => {
+    $$('.saved-kind-switch button',entry).forEach(button => {
+      button.onclick = action(async () => {
+        if (button.getAttribute('aria-pressed') === 'true') return;
+        const controls = $$('.saved-kind-switch button',entry); controls.forEach(control => control.disabled = true);
+        try { await api(`/api/comments/${entry.dataset.comment}`,{method:'PATCH',body:{kind:button.dataset.entryKind}}); await refreshAnnotations(); }
+        finally { controls.forEach(control => control.disabled = false); }
+      });
+    });
+  });
+  prepareMarkdownLinks(root);
+}
+function prepareMarkdownLinks(root) {
+  $$('.markdown-body a',root).forEach(link => { link.target = '_blank'; link.rel = 'noopener noreferrer'; });
+}
+function setupMarkdownComposer(form, kind = 'reply', onDraft = null) {
+  const textarea = $('textarea',form); const submit = $('button[type="submit"]',form);
+  const baseLabel = submit.textContent.trim(); const controls = document.createElement('div'); controls.className = 'markdown-composer-controls';
+  controls.innerHTML = `${entryTypeSwitch(kind)}<span title="Bold, italic, headings, lists, links, tables, and code">Markdown</span>`;
+  form.prepend(controls);
+  const preview = document.createElement('div'); preview.className = 'markdown-preview'; preview.hidden = true;
+  preview.innerHTML = '<span class="markdown-preview-label">Preview</span><div class="markdown-body"></div>'; textarea.after(preview);
+  let timer; let generation = 0;
+  const notifyDraft = () => onDraft?.({body:textarea.value,kind:form.dataset.kind});
+  form.setEntryKind = value => {
+    form.dataset.kind = value; form.classList.toggle('answer-composer',value === 'answer');
+    $$('[data-entry-kind]',controls).forEach(button => button.setAttribute('aria-pressed',button.dataset.entryKind === value));
+    submit.innerHTML = `${value === 'answer' ? 'Post answer' : baseLabel}${icon('up')}`; notifyDraft(); schedulePopupPosition();
+  };
+  $$('[data-entry-kind]',controls).forEach(button => button.onclick = () => form.setEntryKind(button.dataset.entryKind));
+  const previewInput = () => {
+    clearTimeout(timer); const current = ++generation; const body = textarea.value;
+    notifyDraft(); preview.hidden = !body.trim(); if (preview.hidden) { $('.markdown-body',preview).replaceChildren(); schedulePopupPosition(); return; }
+    timer = setTimeout(async () => {
+      if (!form.isConnected) return;
+      try {
+        const rendered = await api('/api/markdown/preview',{method:'POST',body:{body}});
+        if (!form.isConnected || current !== generation) return;
+        $('.markdown-body',preview).innerHTML = rendered.html; prepareMarkdownLinks(preview); schedulePopupPosition();
+        const composer = form.closest('#comment-popover');
+        if (composer && !composer.hidden) position(composer,parseFloat(composer.style.left) || 8,parseFloat(composer.style.top) || 8);
+      } catch { if (form.isConnected && current === generation) $('.markdown-body',preview).textContent = 'Preview will return when the local server reconnects. Your draft is kept.'; }
+    },160);
+  };
+  textarea.addEventListener('input',previewInput); form.setEntryKind(kind); if (textarea.value) previewInput();
+}
 function renderAnnotationPopover() {
   const box = $('#annotation-popover'); if (box.hidden) return;
   const record = state.annotations.find(record => record.id === state.selected);
@@ -698,7 +755,7 @@ function renderAnnotationPopover() {
   const scroll = $('.popup-thread',box)?.scrollTop || 0;
   const labels = {highlight:'Highlight',underline:'Underline',strike:'Strikethrough',comment:'Comment thread'};
   const matches = state.popupMatches.map(id => state.annotations.find(record => record.id === id)).filter(Boolean);
-  box.innerHTML = `<div class="passage-popover-heading"><span class="popup-label">${icon(record.comments.length ? 'comment' : 'highlighter')}${labels[record.kind]}${record.resolved ? ' · Resolved' : ''}</span><button class="icon-button popup-close" aria-label="Close passage popup">${icon('close')}</button></div>${matches.length > 1 ? `<div class="popup-matches"><span>${matches.length} marks at this passage</span><div>${matches.map((match,index) => `<button data-match="${match.id}" aria-pressed="${match.id === record.id}" title="${escapeHTML(match.quote)}">${index+1}. ${labels[match.kind]}</button>`).join('')}</div></div>` : ''}<blockquote class="popup-quote ${record.color}">${escapeHTML(record.quote)}</blockquote><div class="popup-thread">${record.comments.length ? record.comments.map(comment => `<div class="comment-entry"><div class="comment-author"><span class="comment-avatar">Y</span><span>You</span><time datetime="${comment.created_at}">${age(comment.created_at,true)}</time></div><div class="popup-comment-text">${escapeHTML(comment.body)}</div></div>`).join('') : '<p class="popup-empty">A passage worth keeping. Add a thought or question here.</p>'}</div>${record.resolved ? '' : `<form class="popup-reply-form"><textarea aria-label="Reply beside passage" placeholder="${record.comments.length ? 'An answer, or another thought…' : 'Add a thought to this passage…'}" maxlength="20000" required rows="2"></textarea><div><span>⌘ Enter to post</span><button type="submit" class="button primary">${record.comments.length ? 'Reply' : 'Post'}${icon('up')}</button></div></form>`}<div class="popup-actions"><button class="popup-resolve">${icon('check')}${record.resolved ? 'Reopen thread' : 'Resolve'}</button>${state.selection ? '<button class="popup-annotate">Annotate selection</button>' : ''}<button class="popup-panel" title="Focus this entry in Notes & discoveries">${icon('panel')}In panel</button></div>`;
+  box.innerHTML = `<div class="passage-popover-heading"><span class="popup-label">${icon(record.comments.length ? 'comment' : 'highlighter')}${labels[record.kind]}${record.resolved ? ' · Resolved' : ''}</span><button class="icon-button popup-close" aria-label="Close passage popup">${icon('close')}</button></div>${matches.length > 1 ? `<div class="popup-matches"><span>${matches.length} marks at this passage</span><div>${matches.map((match,index) => `<button data-match="${match.id}" aria-pressed="${match.id === record.id}" title="${escapeHTML(match.quote)}">${index+1}. ${labels[match.kind]}</button>`).join('')}</div></div>` : ''}<blockquote class="popup-quote ${record.color}">${escapeHTML(record.quote)}</blockquote><div class="popup-thread">${record.comments.length ? record.comments.map(comment => commentMarkup(comment,true)).join('') : '<p class="popup-empty">A passage worth keeping. Add a thought or question here.</p>'}</div>${record.resolved ? '' : `<form class="popup-reply-form"><textarea aria-label="Reply beside passage" placeholder="${record.comments.length ? 'An answer, or another thought…' : 'Add a thought to this passage…'}" maxlength="20000" required rows="2"></textarea><div><span>⌘ Enter to post</span><button type="submit" class="button primary">${record.comments.length ? 'Reply' : 'Post'}${icon('up')}</button></div></form>`}<div class="popup-actions"><button class="popup-resolve">${icon('check')}${record.resolved ? 'Reopen thread' : 'Resolve'}</button>${state.selection ? '<button class="popup-annotate">Annotate selection</button>' : ''}<button class="popup-panel" title="Focus this entry in Notes & discoveries">${icon('panel')}In panel</button></div>`;
   box.dataset.annotation = record.id;
   $('.popup-close',box).onclick = closeAnnotationPopover;
   $$('[data-match]',box).forEach(button => { button.onclick = () => focusAnnotation(button.dataset.match,false,{matches:state.popupMatches}); });
@@ -706,18 +763,19 @@ function renderAnnotationPopover() {
   $('.popup-annotate',box)?.addEventListener('click',() => { closeAnnotationPopover(); showSelectionToolbar(); });
   const form = $('.popup-reply-form',box);
   if (form) {
-    const textarea = $('textarea',form); textarea.value = state.popupDrafts.get(record.id) || '';
-    textarea.oninput = () => state.popupDrafts.set(record.id,textarea.value);
+    const draft = state.popupDrafts.get(record.id); const textarea = $('textarea',form); textarea.value = typeof draft === 'string' ? draft : draft?.body || '';
+    setupMarkdownComposer(form,draft?.kind || 'reply',draft => state.popupDrafts.set(record.id,draft));
     textarea.onkeydown = event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); form.requestSubmit(); } };
     form.onsubmit = action(async event => {
       event.preventDefault(); const button = $('button[type="submit"]',form); button.disabled = true;
       try {
-        await api(`/api/annotations/${record.id}/comments`,{method:'POST',body:{body:textarea.value}});
+        await api(`/api/annotations/${record.id}/comments`,{method:'POST',body:{body:textarea.value,kind:form.dataset.kind || 'reply'}});
         state.popupDrafts.delete(record.id); await refreshAnnotations();
       } finally { button.disabled = false; }
     });
     if (wasFocused) { textarea.focus({preventScroll:true}); textarea.setSelectionRange(caret,caret); }
   }
+  bindCommentTypes(box);
   $('.popup-resolve',box).onclick = action(async () => {
     await api(`/api/annotations/${record.id}`,{method:'PATCH',body:{resolved:!record.resolved}});
     state.filter = record.resolved ? 'all' : 'resolved'; await refreshAnnotations();
@@ -775,9 +833,10 @@ function annotationClipboardText(record, item = state.active) {
   } else source.push(`Location: ${item.kind === 'note' ? 'Note text' : 'Document text'}`);
   source.push(`Annotation: ${labels[record.kind]}`,`Status: ${record.resolved ? 'Resolved' : 'Open'}`);
   if (record.orphaned) source.push('Source location: The original passage was edited or removed; the saved quotation is preserved.');
-  source.push('','## Highlighted source text','',quoteBlock(record.quote),'','## My comments and questions (chronological)');
+  source.push('','## Highlighted source text','',quoteBlock(record.quote),'','## My comments, questions, and answers (chronological)');
   if (!record.comments.length) source.push('','No comments or questions recorded.');
-  record.comments.forEach((comment,index) => source.push('',index === 0 ? '### Initial comment or question' : `### Reply ${index}`,'',quoteBlock(comment.body)));
+  let answers = 0; let replies = 0;
+  record.comments.forEach((comment,index) => source.push('',comment.kind === 'answer' ? `### Answer ${++answers}` : index === 0 ? '### Initial comment or question' : `### Reply ${++replies}`,'',quoteBlock(comment.body)));
   return source.join('\n');
 }
 async function writeClipboard(text) {
@@ -816,7 +875,7 @@ function renderAnnotations() {
   $$('[data-filter]').forEach(button => { const active = button.dataset.filter === state.filter; button.classList.toggle('active',active); button.setAttribute('aria-selected',active); });
   const list = $('#annotations-list');
   // Keep an in-progress reply while another window posts to the same document.
-  const drafts = new Map($$('.reply-form',list).map(form => [form.dataset.id,$('textarea',form).value]));
+  const drafts = new Map($$('.reply-form',list).map(form => [form.dataset.id,{body:$('textarea',form).value,kind:form.dataset.kind || 'reply'}]));
   const focus = document.activeElement; const focusId = focus?.closest('.reply-form')?.dataset.id; const caret = focusId ? focus.selectionStart : null;
   const scroll = list.scrollTop; list.replaceChildren();
   const records = state.annotations.filter(record => state.filter === 'resolved' ? record.resolved : !record.resolved && (state.filter !== 'comments' || record.comments.length));
@@ -832,19 +891,20 @@ function renderAnnotations() {
     $('.annotation-copy',card).onclick = () => copyAnnotation(record,$('.annotation-copy',card));
     $('.annotation-menu',card).onclick = event => menu(event.currentTarget,[{label:'Jump to passage',icon:'book',run:() => focusAnnotation(record.id,true)},null,{label:'Delete annotation',icon:'trash',danger:true,run:() => modal('Delete this annotation?', '<p>The mark and all replies in this thread will be removed.</p>','Delete annotation',async () => { await api(`/api/annotations/${record.id}`,{method:'DELETE'}); await refreshAnnotations(); },{danger:true})}]);
     for (const comment of record.comments) {
-      const entry = document.createElement('div'); entry.className = 'comment-entry';
-      entry.innerHTML = `<div class="comment-author"><span class="comment-avatar">Y</span><span>You</span><time datetime="${comment.created_at}" title="${escapeHTML(new Date(comment.created_at).toLocaleString())}">${age(comment.created_at,true)}</time></div><div class="comment-text">${escapeHTML(comment.body)}</div>`; card.append(entry);
+      card.insertAdjacentHTML('beforeend',commentMarkup(comment));
     }
     if (!record.resolved) {
       const form = document.createElement('form'); form.className = 'reply-form'; form.dataset.id = record.id;
       form.innerHTML = `<textarea aria-label="${record.comments.length ? 'Reply to thread' : 'Add a comment to this annotation'}" placeholder="${record.comments.length ? 'An answer, or another thought…' : 'Add a thought to this passage…'}" maxlength="20000" required rows="1"></textarea><div class="reply-footer"><span>${record.comments.length ? 'Keep the conversation going' : 'Turn a highlight into a thread'}</span><button type="submit">${record.comments.length ? 'Reply' : 'Post'}${icon('up')}</button></div>`;
-      $('textarea',form).value = drafts.get(record.id) || '';
-      form.onsubmit = action(async event => { event.preventDefault(); const button = $('button',form); button.disabled = true; try { await api(`/api/annotations/${record.id}/comments`,{method:'POST',body:{body:$('textarea',form).value}}); $('textarea',form).value = ''; state.selected = record.id; await refreshAnnotations(); } finally { button.disabled = false; } });
+      const draft = drafts.get(record.id); $('textarea',form).value = draft?.body || '';
+      setupMarkdownComposer(form,draft?.kind || 'reply');
+      form.onsubmit = action(async event => { event.preventDefault(); const button = $('button[type="submit"]',form); button.disabled = true; try { await api(`/api/annotations/${record.id}/comments`,{method:'POST',body:{body:$('textarea',form).value,kind:form.dataset.kind || 'reply'}}); $('textarea',form).value = ''; state.selected = record.id; await refreshAnnotations(); } finally { button.disabled = false; } });
       $('textarea',form).onkeydown = event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); form.requestSubmit(); } }; card.append(form);
     }
     const resolve = document.createElement('button'); resolve.className = 'resolve-button'; resolve.innerHTML = `${icon('check')}${record.resolved ? 'Resolved · Reopen thread' : 'Mark as resolved'}`;
     resolve.onclick = action(async () => { await api(`/api/annotations/${record.id}`,{method:'PATCH',body:{resolved:!record.resolved}}); await refreshAnnotations(); toast(record.resolved ? 'Thread reopened.' : 'One more question, answered.'); }); card.append(resolve); list.append(card);
   }
+  bindCommentTypes(list);
   list.scrollTop = scroll;
   if (focusId) { const textarea = $(`.reply-form[data-id="${focusId}"] textarea`,list); textarea?.focus({preventScroll:true}); textarea?.setSelectionRange(caret,caret); }
 }

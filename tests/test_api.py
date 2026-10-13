@@ -68,6 +68,72 @@ def test_threads_replies_resolving_and_cascade(client, app):
         assert db.execute('SELECT COUNT(*) FROM comments').fetchone()[0] == 0
 
 
+def test_answer_type_markdown_changes_persist_sync_and_export(client, app):
+    note = new_note(client)
+    annotation = text_annotation(client,note['id'],comment='**Question:** why?')
+    first = annotation['comments'][0]
+    assert first['kind'] == 'reply' and '<strong>Question:</strong>' in first['html']
+    body = '**Finding:** evidence helps.\n\n- Observe\n- Compare\n\n`result = 2`'
+    answer = client.post(f'/api/annotations/{annotation["id"]}/comments',json={'body':body,'kind':'answer'}).json()
+    assert answer['kind'] == 'answer' and answer['body'] == body
+    assert '<strong>Finding:</strong>' in answer['html'] and '<ul>' in answer['html'] and '<code>result = 2</code>' in answer['html']
+    with client.websocket_connect('/api/events') as socket:
+        socket.receive_json()
+        changed = client.patch(f'/api/comments/{answer["id"]}',json={'kind':'reply'},headers={'X-Notate-Client':'other-window'})
+        assert changed.status_code == 200 and changed.json()['body'] == body and changed.json()['kind'] == 'reply'
+        event = socket.receive_json()
+        assert event['scope'] == 'annotations' and event['id'] == note['id'] and event['client'] == 'other-window'
+    assert client.patch(f'/api/comments/{answer["id"]}',json={'kind':'answer'}).status_code == 200
+    with TestClient(create_app(app.state.store.directory)) as restarted:
+        exported = restarted.get(f'/api/items/{note["id"]}/export').json()['annotations'][0]['comments']
+        assert exported[1]['kind'] == 'answer' and exported[1]['body'] == body
+    assert client.patch(f'/api/comments/{answer["id"]}',json={'kind':'unexpected'}).status_code == 422
+    assert client.patch('/api/comments/missing',json={'kind':'answer'}).status_code == 404
+
+
+def test_existing_comment_database_migrates_without_losing_threads(client, app):
+    note = new_note(client)
+    annotation = text_annotation(client,note['id'],comment='**Original** question.')
+    # Recreate the schema used by earlier Notate installations, preserving its rows.
+    with app.state.store.connect() as db:
+        db.executescript('''
+            CREATE TABLE legacy_comments (id TEXT PRIMARY KEY,
+                annotation_id TEXT NOT NULL REFERENCES annotations(id) ON DELETE CASCADE,
+                body TEXT NOT NULL, created_at TEXT NOT NULL);
+            INSERT INTO legacy_comments SELECT id,annotation_id,body,created_at FROM comments;
+            DROP TABLE comments;
+            ALTER TABLE legacy_comments RENAME TO comments;
+        ''')
+    for _ in range(2):
+        with TestClient(create_app(app.state.store.directory)) as restarted:
+            comments = restarted.get(f'/api/items/{note["id"]}/annotations').json()[0]['comments']
+            assert len(comments) == 1
+            assert comments[0]['id'] == annotation['comments'][0]['id']
+            assert comments[0]['body'] == '**Original** question.' and comments[0]['kind'] == 'reply'
+            assert '<strong>Original</strong>' in comments[0]['html']
+    with TestClient(create_app(app.state.store.directory)) as restarted:
+        assert restarted.patch(f'/api/comments/{comments[0]["id"]}',json={'kind':'answer'}).status_code == 200
+
+
+def test_markdown_preview_matches_saved_rendering_and_sanitizes_html(client):
+    body = '# Heading\n\n**bold** and *italic* and ~~old~~\nnext line\n\n> a quotation\n\n1. first\n2. second\n\n```python\nprint("hello")\n```\n\n| Key | Value |\n| --- | --- |\n| A | B |\n\n[safe](https://example.com)'
+    rendered = client.post('/api/markdown/preview',json={'body':body})
+    assert rendered.status_code == 200
+    html = rendered.json()['html']
+    for tag in ('<h1>', '<strong>', '<em>', '<s>', '<br>', '<blockquote>', '<ol>', '<pre><code>', '<table>'):
+        assert tag in html
+    assert 'href="https://example.com"' in html
+    note = new_note(client)
+    annotation = text_annotation(client,note['id'],comment=body,comment_kind='answer')
+    assert annotation['comments'][0]['html'] == html and annotation['comments'][0]['kind'] == 'answer'
+    unsafe = '<script>alert(1)</script><img src=x onerror=alert(1)>[unsafe](javascript:alert(1))'
+    sanitized = client.post('/api/markdown/preview',json={'body':unsafe}).json()['html']
+    assert '<script' not in sanitized and '<img' not in sanitized and 'onerror' not in sanitized and 'javascript:' not in sanitized
+    indented = client.post(f'/api/annotations/{annotation["id"]}/comments',json={'body':'    indented code'}).json()
+    assert indented['body'] == '    indented code' and '<pre><code>indented code' in indented['html']
+    assert client.post('/api/markdown/preview',json={'body':'x'*20001}).status_code == 422
+
+
 def test_pdf_bytes_preserved_range_requests_and_anchors(client, pdf_bytes):
     response = client.post('/api/import',files={'file':('field-guide.pdf',pdf_bytes,'application/pdf')})
     assert response.status_code == 201

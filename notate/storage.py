@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .documents import render_comment_markdown
+
 
 def identifier():
     return uuid.uuid4().hex
@@ -48,12 +50,16 @@ class Store:
                 );
                 CREATE TABLE IF NOT EXISTS comments (
                     id TEXT PRIMARY KEY, annotation_id TEXT NOT NULL REFERENCES annotations(id) ON DELETE CASCADE,
-                    body TEXT NOT NULL, created_at TEXT NOT NULL
+                    body TEXT NOT NULL, created_at TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'reply' CHECK(kind IN ('reply', 'answer'))
                 );
                 CREATE INDEX IF NOT EXISTS items_folder ON items(folder_id);
                 CREATE INDEX IF NOT EXISTS annotations_item ON annotations(item_id);
                 CREATE INDEX IF NOT EXISTS comments_annotation ON comments(annotation_id);
             """)
+            db.execute("BEGIN IMMEDIATE")
+            if 'kind' not in {row['name'] for row in db.execute('PRAGMA table_info(comments)')}:
+                db.execute("ALTER TABLE comments ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply' CHECK(kind IN ('reply', 'answer'))")
             if not db.execute("SELECT value FROM settings WHERE key = 'initialized'").fetchone():
                 now = timestamp()
                 reading, notes = identifier(), identifier()
@@ -120,5 +126,7 @@ class Store:
                 record["resolved"] = bool(record["resolved"])
                 record["comments"] = [dict(c) for c in db.execute(
                     "SELECT * FROM comments WHERE annotation_id=? ORDER BY created_at,rowid", (record["id"],))]
+                for comment in record["comments"]:
+                    comment["html"] = render_comment_markdown(comment["body"])
                 result.append(record)
             return result

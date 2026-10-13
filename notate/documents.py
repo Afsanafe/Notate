@@ -6,10 +6,13 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+from functools import lru_cache
 from pathlib import Path
 
 import bleach
 import markdown
+from markdown.extensions import Extension
+from markdown.inlinepatterns import SimpleTagInlineProcessor
 from docx import Document
 from docx.oxml.ns import qn
 from docx.table import Table
@@ -26,6 +29,17 @@ ALLOWED_TAGS = ["p", "br", "strong", "em", "b", "i", "u", "s", "h1", "h2", "h3",
 def clean_note(value):
     return bleach.clean(value, tags=ALLOWED_TAGS, attributes={"a": ["href", "title"]},
                         protocols=["http", "https", "mailto"], strip=True)
+
+
+class StrikeExtension(Extension):
+    def extendMarkdown(self, md):
+        md.inlinePatterns.register(SimpleTagInlineProcessor(r'(~~)(.+?)~~', 's'), 'strikethrough', 175)
+
+
+@lru_cache(maxsize=256)
+def render_comment_markdown(value):
+    rendered = markdown.markdown(value, extensions=['fenced_code', 'tables', 'sane_lists', 'nl2br', StrikeExtension()])
+    return clean_note(rendered)
 
 
 def pdf_pages(path):

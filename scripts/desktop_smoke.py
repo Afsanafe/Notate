@@ -58,16 +58,18 @@ def run():
                 wait_for("document.querySelector('#selection-toolbar').hidden === false")
                 window.evaluate_js("document.querySelector('[data-annotate=comment]').click()")
                 wait_for("document.querySelector('#comment-popover').hidden === false")
-                window.evaluate_js("document.querySelector('#comment-body').value = 'A question from the desktop app.'; document.querySelector('#comment-form').requestSubmit()")
+                window.evaluate_js("document.querySelector('#comment-body').value = '**A question** from the desktop app.'; document.querySelector('#comment-body').dispatchEvent(new Event('input'))")
+                wait_for("document.querySelector('#comment-form .markdown-preview strong')?.textContent === 'A question'")
+                window.evaluate_js("document.querySelector('#comment-form').requestSubmit()")
                 wait_for("document.querySelector('.comment-text')?.textContent === 'A question from the desktop app.'")
                 records = httpx.get(url+f'/api/items/{item_id}/annotations').json()
-                assert records[0]['comments'][0]['body'] == 'A question from the desktop app.'
+                assert records[0]['comments'][0]['body'] == '**A question** from the desktop app.'
                 window.evaluate_js("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text => { window.__copiedAnnotationText = text; }}}); document.querySelector('.annotation-copy').click()")
                 wait_for("window.__copiedAnnotationText?.includes('PDF page: 1')")
                 copied = window.evaluate_js('window.__copiedAnnotationText')
                 assert 'Original file: Desktop reading test.pdf' in copied
                 assert '## Highlighted source text\n\n> Reading is a conversation with an idea.' in copied
-                assert '### Initial comment or question\n\n> A question from the desktop app.' in copied
+                assert '### Initial comment or question\n\n> **A question** from the desktop app.' in copied
                 window.evaluate_js("if (document.documentElement.dataset.theme !== 'dark') document.querySelector('#theme-toggle').click()")
                 wait_for("document.documentElement.dataset.theme === 'dark'")
                 window.evaluate_js('''(() => {
@@ -82,18 +84,26 @@ def run():
                 })()''')
                 wait_for("document.querySelector('#annotation-popover').hidden === false")
                 wait_for("document.querySelector('.annotation-card.selected')?.dataset.annotation === document.querySelector('#annotation-popover').dataset.annotation")
-                window.evaluate_js("document.querySelector('.popup-reply-form textarea').value = 'An answer from the passage popup.'; document.querySelector('.popup-reply-form').requestSubmit()")
+                window.evaluate_js("document.querySelector('.popup-reply-form [data-entry-kind=answer]').click(); document.querySelector('.popup-reply-form textarea').value = '**An answer** from the passage popup.'; document.querySelector('.popup-reply-form textarea').dispatchEvent(new Event('input'))")
+                wait_for("document.querySelector('.popup-reply-form .markdown-preview strong')?.textContent === 'An answer'")
+                window.evaluate_js("document.querySelector('.popup-reply-form').requestSubmit()")
                 wait_for("document.querySelector('.popup-thread').textContent.includes('An answer from the passage popup.')")
                 records = httpx.get(url+f'/api/items/{item_id}/annotations').json()
                 assert len(records) == 1 and len(records[0]['comments']) == 2
+                assert records[0]['comments'][1]['kind'] == 'answer'
+                wait_for("!!document.querySelector('#annotations-list .comment-entry.answer .comment-text strong')")
+                window.evaluate_js("document.querySelector('#annotations-list .comment-entry .saved-kind-switch [data-entry-kind=answer]').click()")
+                wait_for("document.querySelectorAll('#annotations-list .comment-entry.answer').length === 2")
+                window.evaluate_js("document.querySelector('#annotations-list .comment-entry .saved-kind-switch [data-entry-kind=reply]').click()")
+                wait_for("document.querySelectorAll('#annotations-list .comment-entry.answer').length === 1")
                 window.evaluate_js("document.querySelector('.annotation-copy').click()")
-                wait_for("window.__copiedAnnotationText?.includes('### Reply 1')")
-                assert '> An answer from the passage popup.' in window.evaluate_js('window.__copiedAnnotationText')
+                wait_for("window.__copiedAnnotationText?.includes('### Answer 1')")
+                assert '> **An answer** from the passage popup.' in window.evaluate_js('window.__copiedAnnotationText')
                 window.evaluate_js("document.querySelector('#toggle-popups').click()")
                 wait_for("document.querySelector('#annotation-popover').hidden && document.querySelector('#toggle-popups').getAttribute('aria-pressed') === 'false'")
                 results.update(status='passed',native_engine='macOS WKWebView',pdf_text_selection=True,comment_saved_in_shared_backend=True,
-                               dark_mode=True,contained_selection=True,passage_popup_reply=True,popup_toggle=True,copy_markdown=True)
-                print('Native desktop PDF rendering, text selection, passage popups, and per-thread Markdown copy passed.',flush=True)
+                               dark_mode=True,contained_selection=True,passage_popup_reply=True,popup_toggle=True,copy_markdown=True,markdown_preview=True,answer_types=True)
+                print('Native desktop Markdown previews, saved formatting, blue answers, type changes, and Markdown copy passed.',flush=True)
             except BaseException as error:
                 results.update(status='failed',error=str(error))
                 print(f'Desktop verification failed: {error}',flush=True)

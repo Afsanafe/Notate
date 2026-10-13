@@ -18,7 +18,7 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__
-from .documents import clean_note, prepare_document
+from .documents import clean_note, prepare_document, render_comment_markdown
 from .storage import Store, identifier, timestamp
 
 
@@ -59,6 +59,7 @@ class AnnotationInput(BaseModel):
     quote: str = Field(min_length=1, max_length=100_000)
     anchor: dict
     comment: str | None = Field(default=None, max_length=20_000)
+    comment_kind: Literal['reply', 'answer'] = 'reply'
 
 
 class AnnotationUpdate(BaseModel):
@@ -68,13 +69,22 @@ class AnnotationUpdate(BaseModel):
 
 class CommentInput(BaseModel):
     body: str = Field(min_length=1, max_length=20_000)
+    kind: Literal['reply', 'answer'] = 'reply'
 
     @field_validator("body")
     @classmethod
     def trim(cls, value):
         if not value.strip():
             raise ValueError("Write something before posting.")
-        return value.strip()
+        return value.strip('\r\n')
+
+
+class CommentTypeInput(BaseModel):
+    kind: Literal['reply', 'answer']
+
+
+class MarkdownPreviewInput(BaseModel):
+    body: str = Field(default='', max_length=20_000)
 
 
 class SessionInput(BaseModel):
@@ -151,6 +161,10 @@ def create_app(data_dir: str | Path, token: str | None = None):
     @app.get("/api/workspace")
     def workspace():
         return {"folders": store.folders(), "items": store.items()}
+
+    @app.post('/api/markdown/preview')
+    def markdown_preview(body: MarkdownPreviewInput):
+        return {'html': render_comment_markdown(body.body)}
 
     @app.post("/api/folders", status_code=201)
     async def create_folder(body: FolderInput, request: Request):
@@ -356,7 +370,8 @@ def create_app(data_dir: str | Path, token: str | None = None):
             db.execute("INSERT INTO annotations VALUES (?,?,?,?,?,?,?,?)", (annotation_id, item_id,
                        body.kind, body.color, body.quote, json.dumps(body.anchor), 0, now))
             if body.comment and body.comment.strip():
-                db.execute("INSERT INTO comments VALUES (?,?,?,?)", (identifier(), annotation_id, body.comment.strip(), now))
+                db.execute("INSERT INTO comments (id,annotation_id,body,created_at,kind) VALUES (?,?,?,?,?)",
+                           (identifier(), annotation_id, body.comment.strip('\r\n'), now, body.comment_kind))
         await hub.publish(request, "annotations", item_id)
         return next(a for a in store.annotations(item_id) if a["id"] == annotation_id)
 
@@ -387,11 +402,29 @@ def create_app(data_dir: str | Path, token: str | None = None):
 
     @app.post("/api/annotations/{annotation_id}/comments", status_code=201)
     async def reply(annotation_id: str, body: CommentInput, request: Request):
-        record = {"id": identifier(), "annotation_id": annotation_id, "body": body.body, "created_at": timestamp()}
+        record = {"id": identifier(), "annotation_id": annotation_id, "body": body.body,
+                  "created_at": timestamp(), "kind": body.kind}
         with store.connect() as db:
             annotation = annotation_or_404(db, annotation_id)
-            db.execute("INSERT INTO comments VALUES (:id,:annotation_id,:body,:created_at)", record)
+            db.execute("INSERT INTO comments (id,annotation_id,body,created_at,kind) VALUES (:id,:annotation_id,:body,:created_at,:kind)", record)
         await hub.publish(request, "annotations", annotation["item_id"])
+        record['html'] = render_comment_markdown(record['body'])
+        return record
+
+    @app.patch('/api/comments/{comment_id}')
+    async def set_comment_type(comment_id: str, body: CommentTypeInput, request: Request):
+        with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('''SELECT c.*, a.item_id FROM comments c JOIN annotations a ON a.id=c.annotation_id
+                WHERE c.id=?''', (comment_id,)).fetchone()
+            if not row:
+                raise HTTPException(404, 'This thread entry no longer exists.')
+            db.execute('UPDATE comments SET kind=? WHERE id=?', (body.kind, comment_id))
+            record = dict(row)
+        item_id = record.pop('item_id')
+        record['kind'] = body.kind
+        record['html'] = render_comment_markdown(record['body'])
+        await hub.publish(request, 'annotations', item_id)
         return record
 
     @app.get("/api/items/{item_id}/export")
