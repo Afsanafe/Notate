@@ -8,3 +8,91 @@
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation-duration:.01ms!important;transition:none!important}}
 .annotation-mark{pointer-events:none}
 .annotation-mark:focus-visible{outline:2px solid #748e60;outline-offset:2px}
+
+/* Reading preferences and passage threads. */
+:root{color-scheme:light;--surface:#fbfaf5;--raised:#f0f3e8;--reading-ink:#485044;--accent:#6d855b;--soft-ink:#7c8970;--popup-shadow:0 9px 36px #23341c26}
+.top-control{border:1px solid var(--line);color:var(--soft-ink);padding:7px 10px;background:var(--white);font-size:10px}
+.top-control svg{width:14px;height:14px}
+.theme-toggle{width:34px;height:34px;border:1px solid var(--line);background:var(--white);color:var(--soft-ink)}
+.toggle-track{width:22px;height:13px;border-radius:8px;background:#c6cbbd;padding:2px;display:flex;align-items:center;flex-shrink:0}
+.toggle-track>span{height:9px;width:9px;border-radius:50%;background:#fffefa;transition:transform .15s}
+.top-control[aria-pressed="true"] .toggle-track{background:#8ca27a}
+.top-control[aria-pressed="true"] .toggle-track>span{transform:translateX(9px)}
+.annotation-popover{position:fixed;z-index:65;width:330px;max-width:calc(100vw - 16px);display:flex;flex-direction:column;max-height:460px;border:1px solid var(--line);border-radius:9px;background:var(--white);box-shadow:var(--popup-shadow);color:var(--reading-ink)}
+.annotation-popover:before{content:"";position:absolute;left:calc(var(--anchor-offset, 50%) - 5px);width:10px;height:10px;background:var(--white);transform:rotate(45deg);pointer-events:none}
+.annotation-popover[data-placement="below"]:before{top:-6px;border-left:1px solid var(--line);border-top:1px solid var(--line)}
+.annotation-popover[data-placement="above"]:before{bottom:-6px;border-bottom:1px solid var(--line);border-right:1px solid var(--line)}
+.passage-popover-heading{display:flex;align-items:center;justify-content:space-between;padding:11px 13px 7px;flex-shrink:0}
+.popup-label{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:550;color:var(--accent)}
+.popup-label svg{height:14px;width:14px}
+.popup-close{width:23px;height:23px}
+.popup-close svg{width:13px;height:13px}
+.popup-quote{flex-shrink:0;overflow:auto;max-height:61px;margin:2px 13px 9px;padding:7px 10px;border-left:2px solid #c1ac59;border-radius:0 3px 3px 0;background:#f5efd6;font:12px/1.6 Georgia,serif;color:#7c794f;overflow-wrap:anywhere}
+.popup-quote.green{border-color:#9fb584;background:#e8efdf;color:#658252}.popup-quote.blue{border-color:#8db6cb;background:#e7eff4;color:#598197}.popup-quote.pink{border-color:#c794aa;background:#f3e7ec;color:#9a6b80}
+.popup-thread{overflow-y:auto;min-height:0;flex:1;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.popup-thread .comment-entry{padding:9px 13px;border-top-color:var(--line)}
+.popup-thread .comment-author{font-size:9px}.popup-thread .comment-author time{font-size:8px}
+.popup-comment-text{font-size:11px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--reading-ink)}
+.popup-empty{font-size:11px;line-height:1.7;padding:0 13px 8px;margin:0;color:var(--soft-ink)}
+.popup-reply-form{margin:7px 12px 0;flex-shrink:0;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:var(--surface)}
+.popup-reply-form textarea{padding:9px 10px;width:100%;border:0;outline:none;background:transparent;resize:vertical;min-height:49px;max-height:100px;font-size:11px;line-height:1.6;color:var(--reading-ink)}
+.popup-reply-form textarea::placeholder{color:var(--soft-ink)}
+.popup-reply-form>div{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 7px 7px}
+.popup-reply-form>div>span{color:var(--soft-ink);font-size:8px}
+.popup-reply-form .button{padding:3px 9px;font-size:10px}.popup-reply-form svg{height:12px;width:12px}
+.popup-actions{display:flex;align-items:center;gap:8px;padding:10px 13px;flex-shrink:0}
+.popup-actions button{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--soft-ink);border-radius:3px;padding:3px 0}
+.popup-actions svg{height:12px;width:12px}.popup-actions .popup-panel{margin-left:auto}
+.popup-matches{padding:0 13px 9px;flex-shrink:0}.popup-matches>span{font-size:9px;color:var(--soft-ink)}
+.popup-matches>div{display:flex;gap:5px;margin-top:6px;max-height:57px;overflow:auto;flex-wrap:wrap}
+.popup-matches button{font-size:9px;border:1px solid var(--line);border-radius:4px;padding:4px 6px;color:var(--soft-ink);background:var(--surface)}
+.popup-matches button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:var(--green-light)}
+
+/* Dark colors apply to the workspace, notes, and the PDF display layer. */
+:root[data-theme="dark"]{color-scheme:dark;--ink:#e1e8dd;--muted:#a2af9d;--green:#8baa7a;--green-light:#344735;--page:#19221e;--sidebar:#1d2721;--line:#37453a;--white:#232e26;--surface:#212b24;--raised:#2c3a2e;--reading-ink:#dce4d4;--accent:#b5cd9f;--soft-ink:#a9b89b;--shadow:0 5px 22px #0003;--popup-shadow:0 9px 36px #0006}
+:root[data-theme="dark"] button:hover{background:#d4e5c010}
+:root[data-theme="dark"] .brand-mark{background:#58764c;color:#edf3e5}
+:root[data-theme="dark"] .workspace-avatar,:root[data-theme="dark"] .file-type-icon,:root[data-theme="dark"] .count-pill,:root[data-theme="dark"] .annotation-tabs span,:root[data-theme="dark"] .comment-avatar{background:var(--raised);color:var(--accent)}
+:root[data-theme="dark"] .search-box,:root[data-theme="dark"] .button.subtle,:root[data-theme="dark"] .file-card.active,:root[data-theme="dark"] .reader-toolbar,:root[data-theme="dark"] .reader-footer,:root[data-theme="dark"] .format-toolbar,:root[data-theme="dark"] .reply-form textarea,:root[data-theme="dark"] .reply-form .reply-footer,:root[data-theme="dark"] .mode-toggle{background:var(--surface);border-color:var(--line)}
+:root[data-theme="dark"] .search-box kbd,:root[data-theme="dark"] .text-paper,:root[data-theme="dark"] .reading-workspace,:root[data-theme="dark"] .annotation-card,:root[data-theme="dark"] .reply-form,:root[data-theme="dark"] .selection-toolbar,:root[data-theme="dark"] .comment-popover,:root[data-theme="dark"] .floating-menu,:root[data-theme="dark"] dialog,:root[data-theme="dark"] .sidebar-import{border-color:var(--line)}
+:root[data-theme="dark"] .search-box,:root[data-theme="dark"] .icon-button,:root[data-theme="dark"] .breadcrumb,:root[data-theme="dark"] .document-meta,:root[data-theme="dark"] .save-state,:root[data-theme="dark"] .reader-footer,:root[data-theme="dark"] .section-label,:root[data-theme="dark"] .sidebar-footer,:root[data-theme="dark"] .read-mode,:root[data-theme="dark"] .zoom-label,:root[data-theme="dark"] .folder-count,:root[data-theme="dark"] .file-details small,:root[data-theme="dark"] .panel-footer,:root[data-theme="dark"] .comment-author,:root[data-theme="dark"] .comment-author time,:root[data-theme="dark"] .annotation-label,:root[data-theme="dark"] .annotation-card-header,:root[data-theme="dark"] .annotation-tabs button,:root[data-theme="dark"] .annotation-tip,:root[data-theme="dark"] .editor-hint{color:var(--soft-ink)}
+:root[data-theme="dark"] input::placeholder,:root[data-theme="dark"] textarea::placeholder{color:#98a48e}
+:root[data-theme="dark"] .nav-button.active,:root[data-theme="dark"] .folder-row.active{background:var(--green-light);color:var(--ink)}
+:root[data-theme="dark"] .file-card:hover{background:#2b392e}
+:root[data-theme="dark"] .type-tag{background:#314330;color:#c1d5aa}
+:root[data-theme="dark"] .type-tag.pdf,:root[data-theme="dark"] .file-type-icon.pdf{background:#49392d;color:#d6ad92}
+:root[data-theme="dark"] .type-tag.document,:root[data-theme="dark"] .file-type-icon.document{background:#2e3e46;color:#abc5d1}
+:root[data-theme="dark"] .button.primary{background:#658054;color:#f5f8ef}
+:root[data-theme="dark"] .button.primary:hover{background:#789264}
+:root[data-theme="dark"] .reader{background:#141c17;scrollbar-color:#43523f transparent}
+:root[data-theme="dark"] .document-content,:root[data-theme="dark"] .comment-text,:root[data-theme="dark"] .annotation-quote{color:var(--reading-ink)}
+:root[data-theme="dark"] .document-content h1,:root[data-theme="dark"] .document-content h2,:root[data-theme="dark"] .document-content h3,:root[data-theme="dark"] .document-content strong,:root[data-theme="dark"] .panel-heading h2,:root[data-theme="dark"] .annotation-empty h3,:root[data-theme="dark"] .modal-heading h2{color:#d6e4c5}
+:root[data-theme="dark"] .document-content em,:root[data-theme="dark"] .empty-workspace p,:root[data-theme="dark"] .annotation-empty p,:root[data-theme="dark"] .resolve-button,:root[data-theme="dark"] .menu-item,:root[data-theme="dark"] #modal-body label,:root[data-theme="dark"] #modal-body p{color:var(--soft-ink)}
+:root[data-theme="dark"] .document-content blockquote,:root[data-theme="dark"] .document-content pre,:root[data-theme="dark"] .document-content code,:root[data-theme="dark"] .comment-popover blockquote,:root[data-theme="dark"] .annotation-empty .empty-illustration{background:#2d3a2b;color:#c2d3ab;border-color:#667c51}
+:root[data-theme="dark"] .document-content td,:root[data-theme="dark"] .document-content th,:root[data-theme="dark"] .comment-entry,:root[data-theme="dark"] .annotation-tip,:root[data-theme="dark"] .page-number input,:root[data-theme="dark"] .comment-popover textarea,:root[data-theme="dark"] #modal-body input,:root[data-theme="dark"] #modal-body select,:root[data-theme="dark"] #modal-body textarea{border-color:var(--line)}
+:root[data-theme="dark"] .annotations-panel{background:var(--surface);border-color:var(--line)}
+:root[data-theme="dark"] .annotation-card{background:var(--white)}
+:root[data-theme="dark"] .annotation-card.selected{border-color:#849b70;box-shadow:0 0 0 2px #99b77b25}
+:root[data-theme="dark"] .page-number input,:root[data-theme="dark"] .comment-popover textarea,:root[data-theme="dark"] #modal-body input,:root[data-theme="dark"] #modal-body select,:root[data-theme="dark"] #modal-body textarea{background:var(--white);color:var(--ink)}
+:root[data-theme="dark"] .selection-toolbar{background:var(--white)}
+:root[data-theme="dark"] .selection-toolbar button,:root[data-theme="dark"] .popover-heading strong,:root[data-theme="dark"] .annotation-tabs button.active{color:var(--accent)}
+:root[data-theme="dark"] .mode-toggle button{color:var(--soft-ink)}
+:root[data-theme="dark"] .mode-toggle button.active{background:#3a4a35;color:#d5e8bd}
+:root[data-theme="dark"] .annotation-quote span{background:#504b2b;box-shadow:3px 0 #504b2b,-3px 0 #504b2b;color:#e1dca6}
+:root[data-theme="dark"] .annotation-quote.green span{background:#344b30;box-shadow:3px 0 #344b30,-3px 0 #344b30;color:#d0e2bc}
+:root[data-theme="dark"] .annotation-quote.blue span{background:#2e4652;box-shadow:3px 0 #2e4652,-3px 0 #2e4652;color:#c6e0ed}
+:root[data-theme="dark"] .annotation-quote.pink span{background:#513646;box-shadow:3px 0 #513646,-3px 0 #513646;color:#edd0df}
+:root[data-theme="dark"] .popup-quote{background:#474329;color:#e1dca6}
+:root[data-theme="dark"] .popup-quote.green{background:#33452e;color:#d0e2bc}
+:root[data-theme="dark"] .popup-quote.blue{background:#2b414d;color:#c6e0ed}
+:root[data-theme="dark"] .popup-quote.pink{background:#4c3141;color:#edd0df}
+:root[data-theme="dark"] .reply-form button{background:#3b5033;color:#cadfb2}
+:root[data-theme="dark"] .toast{background:var(--white);border-color:var(--line);color:var(--accent)}
+:root[data-theme="dark"] .drop-overlay{background:#1b281fee;border-color:#789566}
+:root[data-theme="dark"] .annotation-mark{mix-blend-mode:screen;opacity:.65}
+:root[data-theme="dark"] .annotation-mark.selected{outline-color:#c9dfa3;opacity:1}
+:root[data-theme="dark"] .pdf-page{background:#1a1a1a;border-color:var(--line)}
+:root[data-theme="dark"] .pdf-page canvas{filter:invert(.9) hue-rotate(180deg)}
+:root[data-theme="dark"] .pdf-page .textLayer ::selection{background:#a6b88b77}
+@media(max-width:1000px){.topbar .breadcrumb{min-width:0}.top-actions{gap:6px}.top-control{padding:7px 8px}}
+@media(max-width:640px){.top-control-label{display:none}.top-control{gap:5px;padding:7px 6px}.theme-toggle{width:30px;height:32px}.theme-toggle svg{width:14px;height:14px}.top-actions{gap:5px}.topbar{gap:7px}.topbar .breadcrumb{flex:1}.topbar .breadcrumb strong{font-size:8px}.annotation-popover{width:320px}.popup-actions{padding:9px 12px}}

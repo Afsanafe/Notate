@@ -28,7 +28,9 @@ const paths = {
   edit:'<path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z"/>',
   move:'<path d="M12 3v18M3 12h18m-12-6 3-3 3 3m-6 12 3 3 3-3M6 9l-3 3 3 3m12-6 3 3-3 3"/>',
   download:'<path d="M12 3v13m-4-4 4 4 4-4M4 17v4h16v-4"/>',
-  menu:'<path d="M4 6h16M4 12h16M4 18h16"/>'
+  menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
+  moon:'<path d="M20.8 13.3A9 9 0 0 1 10.7 3.2 9 9 0 1 0 20.8 13.3Z"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>'
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.file}</svg>`;
 function icons(root = document) { $$('[data-icon]', root).forEach(node => { node.innerHTML = icon(node.dataset.icon); }); }
@@ -42,9 +44,26 @@ const state = {
   recent: readLocal('notate-recent',[]), dirty: false, saving: null, conflict: false,
   selection: null, connected: false, loaded: false, opening: 0, pdf: null,
   observer: null, pdfDocuments: new Map(), zoom: null, page: 1, renderGeneration: 0,
-  saveTimer: null, toastTimer: null, renderQueue: [], rendering: false, retryTimer: null
+  saveTimer: null, toastTimer: null, renderQueue: [], rendering: false, retryTimer: null,
+  popupPreferences: readLocal('notate-popup-preferences', {}), popupTarget: null,
+  popupMatches: [], popupDrafts: new Map(), popupFrame: null, popupPending: false
 };
 icons();
+function setTheme(theme, remember = true) {
+  document.documentElement.dataset.theme = theme;
+  if (remember) writeLocal('notate-theme', theme);
+  const dark = theme === 'dark'; const button = $('#theme-toggle');
+  button.innerHTML = icon(dark ? 'sun' : 'moon'); button.setAttribute('aria-pressed', dark);
+  button.title = button.ariaLabel = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  $('meta[name="theme-color"]').content = dark ? '#19221e' : '#f4f3ed';
+}
+function popupsEnabled() { return !!state.active && state.popupPreferences[state.active.id] !== false; }
+function updatePopupToggle() {
+  const button = $('#toggle-popups'); const enabled = popupsEnabled();
+  button.disabled = !state.active; button.setAttribute('aria-pressed', enabled);
+  button.title = state.active ? `${enabled ? 'Disable' : 'Enable'} passage popups for this ${state.active.kind === 'note' ? 'note' : 'document'}` : 'Open a document to set passage popups';
+}
+setTheme(document.documentElement.dataset.theme || 'light', false);
 function toast(message, error = false) {
   const node = $('#toast'); node.textContent = message; node.classList.toggle('error', error); node.hidden = false;
   clearTimeout(state.toastTimer); state.toastTimer = setTimeout(() => { node.hidden = true; }, error ? 6500 : 3500);
@@ -221,6 +240,7 @@ function renderHeading() {
   $('#document-eyebrow').textContent = item.kind === 'note' ? 'A SPACE FOR YOUR THOUGHTS' : 'YOUR READING ROOM';
   $('#document-meta').innerHTML = `<span class="type-tag ${item.kind}">${item.kind === 'pdf' ? 'PDF' : item.kind === 'note' ? 'NOTE' : item.has_pdf ? 'DOCUMENT · PDF VIEW' : 'DOCUMENT'}</span><span>${icon('folder')} ${escapeHTML(folderName(item.folder_id))}</span>${item.page_count ? `<span class="meta-separator">·</span><span>${item.page_count} pages</span>` : ''}<span class="meta-separator updated-label">·</span><span class="updated-label">Updated ${age(item.updated_at)}</span>`;
   $('#document-menu').disabled = false; $('#toggle-annotations').disabled = false;
+  updatePopupToggle();
 }
 function renderEmpty() {
   resetReader(); state.active = null; state.annotations = []; renderNavigation(); renderAnnotations();
@@ -231,10 +251,12 @@ function renderEmpty() {
   $('#reader').innerHTML = `<div class="empty-workspace"><div class="empty-illustration">${icon('book')}</div><h2>Every discovery starts somewhere.</h2><p>Bring a document you’ve been meaning to read.<br>Or open a blank page and follow a thought.</p><div class="empty-actions"><button class="button subtle" id="empty-note">${icon('plus')}New note</button><button class="button primary" id="empty-import">${icon('upload')}Import a document</button></div></div>`;
   $('#empty-note').onclick = newNoteDialog; $('#empty-import').onclick = () => $('#file-input').click();
   $('#document-menu').disabled = true; $('#toggle-annotations').disabled = true;
+  updatePopupToggle();
 }
 function resetReader() {
   state.observer?.disconnect(); state.observer = null; state.renderGeneration++; state.renderQueue = [];
   state.pdf = null; state.selection = null; hideSelection(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true;
+  closeAnnotationPopover(); state.popupTarget = null; state.popupMatches = [];
 }
 async function openItem(id, edit = false, force = false) {
   if (state.active?.id === id && !force) { if (edit) setEditMode(true); $('#sidebar').classList.remove('open'); return; }
@@ -276,7 +298,7 @@ function setEditMode(edit) {
   content.contentEditable = edit ? 'true' : 'false'; content.spellcheck = edit;
   $('.text-paper').classList.toggle('editing',edit); $('#format-toolbar').hidden = !edit;
   $('#edit-mode')?.classList.toggle('active',edit); $('#read-mode')?.classList.toggle('active',!edit);
-  if (edit) content.focus(); hideSelection();
+  if (edit) content.focus(); hideSelection(); closeAnnotationPopover();
 }
 function onNoteInput() {
   if (!state.active) return;
@@ -392,6 +414,7 @@ function buildPDFPages() {
   $$('.pdf-page',reader).forEach(page => state.observer.observe(page));
   queuePage($('.pdf-page',reader)); renderPDFMarks();
   if (state.page > 1) goToPage(state.page);
+  schedulePopupPosition();
 }
 function queuePage(element) {
   if (!element || element.dataset.rendered || element.dataset.queued) return;
@@ -419,6 +442,7 @@ async function drainRenderQueue() {
       const text = await page.getTextContent();
       await new pdfjs.TextLayer({textContentSource:text,container:layer,viewport}).render();
       element.dataset.rendered = '1'; $('.page-placeholder',element)?.remove(); renderPDFMarks(element);
+      schedulePopupPosition();
       if (pdf.numPages === 1 && !text.items.some(item => item.str?.trim())) toast('This page is an image scan. Text selection needs a searchable PDF with OCR.');
     } catch (error) {
       if (generation === state.renderGeneration) { const placeholder = $('.page-placeholder',element); if (placeholder) placeholder.textContent = `Page could not render: ${error.message}`; }
@@ -493,6 +517,16 @@ function captureSelection() {
     quote = full.slice(start,end); anchor = {type:'text',start,end,prefix:full.slice(Math.max(0,start-40),start),suffix:full.slice(end,end+40)};
   }
   state.selection = {quote,anchor,range:range.cloneRange(),itemId:state.active.id};
+  const matches = matchingSelectionAnnotations(anchor, range);
+  if (matches.length) {
+    hideSelection(); $('#comment-popover').hidden = true;
+    focusAnnotation(matches[0].id, false, {matches:matches.map(record => record.id), range});
+    return;
+  }
+  closeAnnotationPopover(); showSelectionToolbar();
+}
+function showSelectionToolbar() {
+  const range = state.selection?.range; if (!range) return;
   const rect = range.getBoundingClientRect(); const toolbar = $('#selection-toolbar'); toolbar.hidden = false;
   $('#selection-color').className = `color-trigger ${state.color}`;
   const y = rect.top-45 > 8 ? rect.top-45 : rect.bottom+8;
@@ -512,6 +546,7 @@ async function annotate(kind, comment = null) {
 function openCommentComposer() {
   if (!state.selection) return;
   const toolbar = $('#selection-toolbar').getBoundingClientRect(); hideSelection();
+  closeAnnotationPopover();
   const box = $('#comment-popover'); box.hidden = false; $('#comment-quote').textContent = state.selection.quote;
   $('#comment-body').value = ''; position(box,toolbar.left,toolbar.bottom+8); $('#comment-body').focus();
 }
@@ -531,7 +566,7 @@ function annotationMark(record, rectangle, percent) {
   mark.dataset.annotation = record.id; mark.title = `${record.kind === 'strike' ? 'Strikethrough' : record.kind}: ${record.quote.slice(0,150)}`;
   mark.setAttribute('aria-label',mark.title); const unit = percent ? '%' : 'px'; const multiplier = percent ? 100 : 1;
   for (const [property,key] of [['left','x'],['top','y'],['width','width'],['height','height']]) mark.style[property] = `${rectangle[key]*multiplier}${unit}`;
-  mark.onclick = () => focusAnnotation(record.id); return mark;
+  mark.onclick = () => focusAnnotation(record.id, false, {mark}); return mark;
 }
 function renderPDFMarks(onlyPage = null) {
   for (const page of onlyPage ? [onlyPage] : $$('.pdf-page')) {
@@ -571,11 +606,135 @@ function renderTextMarks() {
     const range = anchoredRange(record,content); record.orphaned = !range;
     if (range) for (const rect of selectedRects(content,range)) layer.append(annotationMark(record,{x:rect.left-bounds.left,y:rect.top-bounds.top,width:rect.width,height:rect.height},false));
   }
+  schedulePopupPosition();
 }
 function renderMarks() { state.active?.has_pdf ? renderPDFMarks() : renderTextMarks(); }
-function openPanel() { $('#reading-workspace').classList.remove('panel-hidden'); $('#reading-workspace').classList.add('panel-mobile-open'); }
-function focusAnnotation(id, scrollDocument = false) {
+function orderedMatches(records) {
+  return records.sort((a,b) => Number(b.id === state.selected)-Number(a.id === state.selected)
+    || a.quote.length-b.quote.length || Number(!!b.comments.length)-Number(!!a.comments.length)
+    || b.created_at.localeCompare(a.created_at));
+}
+function matchingSelectionAnnotations(anchor, range) {
+  const records = state.annotations.filter(record => {
+    if (record.anchor.type !== anchor.type) return false;
+    if (anchor.type === 'text') {
+      const content = $('#note-content'); const existing = content && anchoredRange(record,content);
+      return existing && range.compareBoundaryPoints(Range.START_TO_START,existing) >= 0
+        && range.compareBoundaryPoints(Range.END_TO_END,existing) <= 0;
+    }
+    return anchor.pages.every(page => {
+      const existing = record.anchor.pages.find(other => other.page === page.page);
+      return existing && page.rects.every(rect => existing.rects.some(mark => rect.x >= mark.x-.003
+        && rect.y >= mark.y-.004 && rect.x+rect.width <= mark.x+mark.width+.003
+        && rect.y+rect.height <= mark.y+mark.height+.004));
+    });
+  });
+  return orderedMatches(records);
+}
+function annotationsAtPoint(x,y) {
+  const marks = $$('.annotation-mark',$('#reader')).filter(mark => {
+    const rect = mark.getBoundingClientRect();
+    return x >= rect.left && x <= rect.right && y >= rect.top-1 && y <= rect.bottom+1;
+  });
+  const ids = new Set(marks.map(mark => mark.dataset.annotation));
+  return {records:orderedMatches(state.annotations.filter(record => ids.has(record.id))),marks};
+}
+function passageMark(id, range = null) {
+  const marks = $$('.annotation-mark',$('#reader')).filter(mark => mark.dataset.annotation === id);
+  if (range) {
+    const rects = [...range.getClientRects()];
+    const matching = marks.find(mark => { const bounds = mark.getBoundingClientRect(); return rects.some(rect => rect.left < bounds.right && rect.right > bounds.left && rect.top < bounds.bottom && rect.bottom > bounds.top); });
+    if (matching) return matching;
+  }
+  const viewport = $('#reader').getBoundingClientRect();
+  return marks.find(mark => { const rect = mark.getBoundingClientRect(); return rect.top < viewport.bottom && rect.bottom > viewport.top; }) || marks[0];
+}
+function rememberPopupTarget(mark) {
+  const page = mark.closest('.pdf-page'); const container = page || mark.closest('.text-paper');
+  const marks = $$('.annotation-mark',container).filter(other => other.dataset.annotation === mark.dataset.annotation);
+  state.popupTarget = {id:mark.dataset.annotation,page:page ? Number(page.dataset.page) : null,segment:marks.indexOf(mark)};
+}
+function popupTargetMark() {
+  const target = state.popupTarget; if (!target) return null;
+  const container = target.page ? $(`.pdf-page[data-page="${target.page}"]`) : $('.text-paper');
+  if (!container) return null;
+  return $$('.annotation-mark',container).filter(mark => mark.dataset.annotation === target.id)[target.segment];
+}
+function closeAnnotationPopover() { $('#annotation-popover').hidden = true; state.popupPending = false; }
+function schedulePopupPosition() {
+  if ($('#annotation-popover').hidden || state.popupFrame) return;
+  state.popupFrame = requestAnimationFrame(() => { state.popupFrame = null; positionAnnotationPopover(); });
+}
+function positionAnnotationPopover() {
+  const box = $('#annotation-popover'); if (box.hidden) return;
+  const mark = popupTargetMark(); if (!mark) { closeAnnotationPopover(); return; }
+  const rect = mark.getBoundingClientRect(); const reader = $('#reader').getBoundingClientRect();
+  if (rect.bottom <= reader.top || rect.top >= reader.bottom || rect.right <= reader.left || rect.left >= reader.right) {
+    if (state.popupPending) box.style.visibility = 'hidden';
+    else closeAnnotationPopover();
+    return;
+  }
+  state.popupPending = false; box.style.visibility = '';
+  const topEdge = Math.max(8,reader.top+6); const bottomEdge = Math.min(innerHeight-8,reader.bottom-6);
+  const above = rect.top-topEdge-10; const below = bottomEdge-rect.bottom-10;
+  box.style.maxHeight = `${Math.min(460,bottomEdge-topEdge)}px`;
+  let height = box.getBoundingClientRect().height;
+  const placeAbove = above >= height || (below < height && above > below);
+  const available = placeAbove ? above : below;
+  box.style.maxHeight = `${Math.max(140,Math.min(460,available))}px`;
+  height = box.getBoundingClientRect().height;
+  const width = box.getBoundingClientRect().width; const center = Math.max(reader.left,Math.min(reader.right,rect.left+rect.width/2));
+  const left = Math.max(8,Math.min(center-width/2,innerWidth-width-8));
+  box.style.left = `${left}px`; box.style.top = `${Math.max(topEdge,Math.min(placeAbove ? rect.top-height-10 : rect.bottom+10,bottomEdge-height))}px`;
+  box.style.setProperty('--anchor-offset',`${Math.min(width-18,Math.max(18,center-left))}px`);
+  box.dataset.placement = placeAbove ? 'above' : 'below';
+}
+function renderAnnotationPopover() {
+  const box = $('#annotation-popover'); if (box.hidden) return;
+  const record = state.annotations.find(record => record.id === state.selected);
+  if (!record || !popupsEnabled()) { closeAnnotationPopover(); return; }
+  const previous = $('.popup-reply-form textarea',box); const wasFocused = previous === document.activeElement; const caret = previous?.selectionStart;
+  const scroll = $('.popup-thread',box)?.scrollTop || 0;
+  const labels = {highlight:'Highlight',underline:'Underline',strike:'Strikethrough',comment:'Comment thread'};
+  const matches = state.popupMatches.map(id => state.annotations.find(record => record.id === id)).filter(Boolean);
+  box.innerHTML = `<div class="passage-popover-heading"><span class="popup-label">${icon(record.comments.length ? 'comment' : 'highlighter')}${labels[record.kind]}${record.resolved ? ' · Resolved' : ''}</span><button class="icon-button popup-close" aria-label="Close passage popup">${icon('close')}</button></div>${matches.length > 1 ? `<div class="popup-matches"><span>${matches.length} marks at this passage</span><div>${matches.map((match,index) => `<button data-match="${match.id}" aria-pressed="${match.id === record.id}" title="${escapeHTML(match.quote)}">${index+1}. ${labels[match.kind]}</button>`).join('')}</div></div>` : ''}<blockquote class="popup-quote ${record.color}">${escapeHTML(record.quote)}</blockquote><div class="popup-thread">${record.comments.length ? record.comments.map(comment => `<div class="comment-entry"><div class="comment-author"><span class="comment-avatar">Y</span><span>You</span><time datetime="${comment.created_at}">${age(comment.created_at,true)}</time></div><div class="popup-comment-text">${escapeHTML(comment.body)}</div></div>`).join('') : '<p class="popup-empty">A passage worth keeping. Add a thought or question here.</p>'}</div>${record.resolved ? '' : `<form class="popup-reply-form"><textarea aria-label="Reply beside passage" placeholder="${record.comments.length ? 'An answer, or another thought…' : 'Add a thought to this passage…'}" maxlength="20000" required rows="2"></textarea><div><span>⌘ Enter to post</span><button type="submit" class="button primary">${record.comments.length ? 'Reply' : 'Post'}${icon('up')}</button></div></form>`}<div class="popup-actions"><button class="popup-resolve">${icon('check')}${record.resolved ? 'Reopen thread' : 'Resolve'}</button>${state.selection ? '<button class="popup-annotate">Annotate selection</button>' : ''}<button class="popup-panel" title="Focus this entry in Notes & discoveries">${icon('panel')}In panel</button></div>`;
+  box.dataset.annotation = record.id;
+  $('.popup-close',box).onclick = closeAnnotationPopover;
+  $$('[data-match]',box).forEach(button => { button.onclick = () => focusAnnotation(button.dataset.match,false,{matches:state.popupMatches}); });
+  $('.popup-panel',box).onclick = () => { closeAnnotationPopover(); $(`.annotation-card[data-annotation="${record.id}"]`)?.scrollIntoView({block:'nearest',behavior:'smooth'}); };
+  $('.popup-annotate',box)?.addEventListener('click',() => { closeAnnotationPopover(); showSelectionToolbar(); });
+  const form = $('.popup-reply-form',box);
+  if (form) {
+    const textarea = $('textarea',form); textarea.value = state.popupDrafts.get(record.id) || '';
+    textarea.oninput = () => state.popupDrafts.set(record.id,textarea.value);
+    textarea.onkeydown = event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); form.requestSubmit(); } };
+    form.onsubmit = action(async event => {
+      event.preventDefault(); const button = $('button[type="submit"]',form); button.disabled = true;
+      try {
+        await api(`/api/annotations/${record.id}/comments`,{method:'POST',body:{body:textarea.value}});
+        state.popupDrafts.delete(record.id); await refreshAnnotations();
+      } finally { button.disabled = false; }
+    });
+    if (wasFocused) { textarea.focus({preventScroll:true}); textarea.setSelectionRange(caret,caret); }
+  }
+  $('.popup-resolve',box).onclick = action(async () => {
+    await api(`/api/annotations/${record.id}`,{method:'PATCH',body:{resolved:!record.resolved}});
+    state.filter = record.resolved ? 'all' : 'resolved'; await refreshAnnotations();
+  });
+  $('.popup-thread',box).scrollTop = scroll; positionAnnotationPopover();
+}
+function openPanel() {
+  const workspace = $('#reading-workspace'); const wasHidden = workspace.classList.contains('panel-hidden');
+  workspace.classList.remove('panel-hidden'); workspace.classList.add('panel-mobile-open');
+  if (wasHidden && innerWidth > 860 && state.pdf && !state.zoom) buildPDFPages();
+}
+function focusAnnotation(id, scrollDocument = false, options = {}) {
   const record = state.annotations.find(value => value.id === id); if (!record) return;
+  state.popupMatches = options.matches || [id];
+  state.popupPending = scrollDocument;
+  const mark = options.mark || passageMark(id, options.range);
+  if (mark) rememberPopupTarget(mark);
+  else state.popupTarget = {id, page:record.anchor.pages?.[0]?.page || null, segment:0};
   state.selected = id; state.filter = record.resolved ? 'resolved' : 'all'; openPanel(); renderAnnotations(); renderMarks();
   const card = $(`[data-annotation="${id}"]`,$('#annotations-list')); card?.scrollIntoView({block:'nearest',behavior:'smooth'});
   if (scrollDocument) {
@@ -584,11 +743,18 @@ function focusAnnotation(id, scrollDocument = false) {
     else if (record.anchor.pages?.length) goToPage(record.anchor.pages[0].page);
     else toast('The selected passage was edited or removed. The original quote is kept in this thread.');
   }
+  if (popupsEnabled()) { $('#annotation-popover').hidden = false; renderAnnotationPopover(); }
+  else closeAnnotationPopover();
 }
 async function refreshAnnotations() {
   if (!state.active) return;
   const id = state.active.id; const records = await api(`/api/items/${id}/annotations`);
   if (state.active?.id !== id) return; state.annotations = records; renderMarks(); renderAnnotations(); await refreshWorkspace();
+  if (!$('#annotation-popover').hidden) {
+    const selected = records.find(record => record.id === state.selected);
+    if (selected && selected.resolved !== (state.filter === 'resolved')) { state.filter = selected.resolved ? 'resolved' : 'all'; renderAnnotations(); }
+    renderAnnotationPopover();
+  }
 }
 function renderAnnotations() {
   $('#annotation-count').textContent = state.annotations.length; $('#all-annotations-count').textContent = state.annotations.filter(record => !record.resolved).length;
@@ -671,6 +837,20 @@ async function boot() {
 }
 
 $('#new-note').onclick = newNoteDialog; $('#add-folder').onclick = () => folderDialog();
+$('#theme-toggle').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+$('#toggle-popups').onclick = () => {
+  if (!state.active) return;
+  state.popupPreferences[state.active.id] = !popupsEnabled();
+  writeLocal('notate-popup-preferences',state.popupPreferences); updatePopupToggle();
+  if (!popupsEnabled()) closeAnnotationPopover();
+};
+window.addEventListener('storage',event => {
+  if (event.key === 'notate-theme') setTheme(readLocal('notate-theme','light'),false);
+  if (event.key === 'notate-popup-preferences') {
+    state.popupPreferences = readLocal('notate-popup-preferences',{}); updatePopupToggle();
+    if (!popupsEnabled()) closeAnnotationPopover();
+  }
+});
 for (const id of ['import','sidebar-import']) $(`#${id}`).onclick = () => $('#file-input').click();
 $('#file-input').onchange = action(async event => { const files = [...event.target.files]; event.target.value = ''; await importFiles(files); });
 $('#search').oninput = event => { state.query = event.target.value; renderNavigation(); };
@@ -699,15 +879,18 @@ $('#reader').addEventListener('pointerup',event => {
   setTimeout(() => {
     captureSelection();
     if (!getSelection().toString().trim() && !state.editing) {
-      const hit = $$('.annotation-mark').find(mark => { const rect = mark.getBoundingClientRect(); return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom; });
-      if (hit) focusAnnotation(hit.dataset.annotation);
+      const hit = annotationsAtPoint(event.clientX,event.clientY);
+      if (hit.records.length) {
+        const id = hit.records[0].id; state.selection = null;
+        focusAnnotation(id,false,{matches:hit.records.map(record => record.id),mark:hit.marks.find(mark => mark.dataset.annotation === id)});
+      } else closeAnnotationPopover();
     }
   },20);
 });
 $('#reader').addEventListener('keyup',event => { if (event.shiftKey) captureSelection(); });
 let scrollTimer;
 $('#reader').addEventListener('scroll',() => {
-  hideSelection(); clearTimeout(scrollTimer); scrollTimer = setTimeout(() => {
+  hideSelection(); schedulePopupPosition(); clearTimeout(scrollTimer); scrollTimer = setTimeout(() => {
     if (!state.pdf) return; const top = $('#reader').getBoundingClientRect().top+40;
     const page = $$('.pdf-page').find(element => element.getBoundingClientRect().bottom > top);
     if (page) { state.page = Number(page.dataset.page); $('#current-page').value = state.page; releaseDistantCanvases(); }
@@ -717,9 +900,10 @@ document.addEventListener('pointerdown',event => {
   if (!event.target.closest('#floating-menu,#selection-color,.annotation-menu,.folder-menu,#document-menu')) $('#floating-menu').hidden = true;
   if (!event.target.closest('#selection-toolbar,#comment-popover,#reader')) hideSelection();
   if (!event.target.closest('#sidebar,#sidebar-toggle')) $('#sidebar').classList.remove('open');
+  if (!event.target.closest('#annotation-popover,#reader,#toggle-popups,#theme-toggle,.annotation-quote')) closeAnnotationPopover();
 });
 document.addEventListener('keydown',event => {
-  if (event.key === 'Escape') { hideSelection(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; $('#sidebar').classList.remove('open'); }
+  if (event.key === 'Escape') { hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; $('#sidebar').classList.remove('open'); }
   if (!(event.metaKey || event.ctrlKey)) return;
   if (event.key.toLowerCase() === 'k') { event.preventDefault(); $('#sidebar').classList.add('open'); $('#search').focus(); }
   if (event.key.toLowerCase() === 's') { event.preventDefault(); saveNote(); }
@@ -727,7 +911,7 @@ document.addEventListener('keydown',event => {
 });
 window.addEventListener('beforeunload',event => { if (state.dirty) { event.preventDefault(); event.returnValue = ''; } });
 document.addEventListener('visibilitychange',() => { if (document.hidden && state.dirty) saveNote(); else if (!document.hidden && state.loaded && state.connected) synchronize().catch(() => {}); });
-let resizeTimer; window.addEventListener('resize',() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { hideSelection(); if (state.pdf && !state.zoom) buildPDFPages(); else renderTextMarks(); },200); });
+let resizeTimer; window.addEventListener('resize',() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { hideSelection(); if (state.pdf && !state.zoom) buildPDFPages(); else renderTextMarks(); schedulePopupPosition(); },200); });
 new ResizeObserver(() => { if (!state.pdf) requestAnimationFrame(renderTextMarks); }).observe($('#reader'));
 let dragDepth = 0;
 document.addEventListener('dragenter',event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth++; $('#drop-overlay').hidden = false; } });

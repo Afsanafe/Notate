@@ -62,8 +62,29 @@ def run():
                 wait_for("document.querySelector('.comment-text')?.textContent === 'A question from the desktop app.'")
                 records = httpx.get(url+f'/api/items/{item_id}/annotations').json()
                 assert records[0]['comments'][0]['body'] == 'A question from the desktop app.'
-                results.update(status='passed',native_engine='macOS WKWebView',pdf_text_selection=True,comment_saved_in_shared_backend=True)
-                print('Native desktop launcher, WKWebView PDF rendering, text selection, and saved comment passed.',flush=True)
+                window.evaluate_js("if (document.documentElement.dataset.theme !== 'dark') document.querySelector('#theme-toggle').click()")
+                wait_for("document.documentElement.dataset.theme === 'dark'")
+                window.evaluate_js('''(() => {
+                  const container = document.querySelector('.pdf-page .textLayer');
+                  const walker = document.createTreeWalker(container,NodeFilter.SHOW_TEXT);
+                  let node; while (node = walker.nextNode()) {
+                    const index = node.textContent.indexOf('Reading'); if (index < 0) continue;
+                    const range = document.createRange(); range.setStart(node,index); range.setEnd(node,index+7);
+                    getSelection().removeAllRanges(); getSelection().addRange(range);
+                    container.dispatchEvent(new PointerEvent('pointerup',{bubbles:true})); return;
+                  }
+                })()''')
+                wait_for("document.querySelector('#annotation-popover').hidden === false")
+                wait_for("document.querySelector('.annotation-card.selected')?.dataset.annotation === document.querySelector('#annotation-popover').dataset.annotation")
+                window.evaluate_js("document.querySelector('.popup-reply-form textarea').value = 'An answer from the passage popup.'; document.querySelector('.popup-reply-form').requestSubmit()")
+                wait_for("document.querySelector('.popup-thread').textContent.includes('An answer from the passage popup.')")
+                records = httpx.get(url+f'/api/items/{item_id}/annotations').json()
+                assert len(records) == 1 and len(records[0]['comments']) == 2
+                window.evaluate_js("document.querySelector('#toggle-popups').click()")
+                wait_for("document.querySelector('#annotation-popover').hidden && document.querySelector('#toggle-popups').getAttribute('aria-pressed') === 'false'")
+                results.update(status='passed',native_engine='macOS WKWebView',pdf_text_selection=True,comment_saved_in_shared_backend=True,
+                               dark_mode=True,contained_selection=True,passage_popup_reply=True,popup_toggle=True)
+                print('Native desktop PDF rendering, text selection, dark mode, passage popups, replies, and toggle passed.',flush=True)
             except BaseException as error:
                 results.update(status='failed',error=str(error))
                 print(f'Desktop verification failed: {error}',flush=True)

@@ -52,6 +52,9 @@ For only the web app, install with `python -m pip install -e .`. The native wind
 - Notes have **Read** and **Edit note** modes. Editing saves automatically, with bold, italic, headings, lists, and quotes. Pasted text is inserted as plain text.
 - Select text to open a floating toolbar with **Highlight**, **Underline**, **Strikethrough**, **Comment**, and four annotation colors.
 - Comments automatically highlight the selected text. Click the passage or its quote in the side panel to return to the thread. Reply with an answer or finding, then **Mark as resolved**. Resolved threads can be reopened.
+- Click any word in a marked passage, or select a contiguous part of it, to select its entry in **Notes & discoveries**. Marks that wrap across lines stay connected to the same entry. Overlapping marks can be chosen in the passage popup; **Annotate selection** opens the tools for an additional annotation.
+- The top-bar **Popups** switch enables or disables existing annotation threads beside their passage, separately for each document or note. Popups show above or below the text and support replies and resolution. Turning popups off keeps sidebar navigation available. Clicking **Comment** to create a new thread still opens its composer.
+- The moon/sun button switches **dark/light mode**. Dark mode covers the workspace, notes, and PDF pages. The PDF display filter changes on-screen colors while preserving the original file. Theme and per-document popup settings are remembered in this browser or desktop view; browser tabs sharing the same origin also receive preference updates.
 - The sidebar search finds documents by title, filename, or folder. Recently opened documents are tracked per browser.
 - Keyboard shortcuts: **⌘/Ctrl K** searches, **⌘/Ctrl N** creates a note, **⌘/Ctrl S** saves, and **⌘/Ctrl Enter** posts a comment or reply.
 

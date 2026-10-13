@@ -6,6 +6,12 @@
   <meta name="theme-color" content="#f4f3ed">
   <meta name="description" content="Your local workspace for reading, annotating, and connecting ideas.">
   <title>Notate — a space for your thoughts</title>
+  <script>
+    try {
+      const saved = JSON.parse(localStorage.getItem('notate-theme'));
+      document.documentElement.dataset.theme = saved === 'dark' || saved === 'light' ? saved : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    } catch { document.documentElement.dataset.theme = 'light'; }
+  </script>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='11' fill='%23345143'/%3E%3Cpath d='M12 29V11h4l9 13V11h3v18h-4l-9-13v13z' fill='%23f4f3ed'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/vendor/pdf_viewer.css">
   <link rel="stylesheet" href="/static/style.css">
@@ -28,7 +34,7 @@
     </aside>
 
     <main class="main" id="main">
-      <header class="topbar"><div class="breadcrumb"><button id="sidebar-toggle" class="icon-button mobile-only" aria-label="Toggle navigation"><span data-icon="menu"></span></button><span data-icon="home"></span><span>Workspace</span><span class="breadcrumb-slash">/</span><strong id="breadcrumb-current">All documents</strong></div><div class="top-actions"><button id="new-note" class="button subtle"><span data-icon="plus"></span>New note</button><button id="import" class="button primary"><span data-icon="upload"></span>Import<span class="desktop-only"> document</span></button></div></header>
+      <header class="topbar"><div class="breadcrumb"><button id="sidebar-toggle" class="icon-button mobile-only" aria-label="Toggle navigation"><span data-icon="menu"></span></button><span data-icon="home"></span><span>Workspace</span><span class="breadcrumb-slash">/</span><strong id="breadcrumb-current">All documents</strong></div><div class="top-actions"><button id="toggle-popups" class="button top-control" aria-pressed="true" aria-label="Show passage popups" title="Show annotation threads beside marked text"><span data-icon="comment"></span><span class="top-control-label">Popups</span><span class="toggle-track" aria-hidden="true"><span></span></span></button><button id="theme-toggle" class="icon-button theme-toggle" aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode"><span data-icon="moon"></span></button><button id="new-note" class="button subtle"><span data-icon="plus"></span>New note</button><button id="import" class="button primary"><span data-icon="upload"></span>Import<span class="desktop-only"> document</span></button></div></header>
       <div class="document-heading"><div class="heading-copy"><div class="eyebrow" id="document-eyebrow">YOUR READING ROOM</div><h1 id="document-title">Make room for a new idea.</h1><div class="document-meta" id="document-meta">A home for your reading and everything you discover.</div></div><div class="document-actions"><button id="toggle-annotations" class="button subtle" title="Toggle annotations"><span data-icon="panel"></span><span class="desktop-only">Annotations</span><span id="annotation-count" class="count-pill">0</span></button><button id="document-menu" class="icon-button more-button" aria-label="Document options" title="Document options"><span data-icon="more"></span></button></div></div>
       <div class="reading-workspace" id="reading-workspace">
         <section class="reader-column" aria-label="Document reader">
@@ -44,6 +50,7 @@
 
   <div id="selection-toolbar" class="selection-toolbar" hidden role="toolbar" aria-label="Annotate selected text"><button data-annotate="highlight" title="Highlight" aria-label="Highlight selected text"><span data-icon="highlighter"></span><span>Highlight</span></button><button data-annotate="underline" title="Underline" aria-label="Underline selected text"><u>U</u></button><button data-annotate="strike" title="Strikethrough" aria-label="Strike through selected text"><s>S</s></button><span class="toolbar-separator"></span><button data-annotate="comment" title="Comment" aria-label="Comment on selected text"><span data-icon="comment"></span><span>Comment</span></button><span class="toolbar-separator"></span><button id="selection-color" class="color-trigger" title="Change annotation color" aria-label="Change annotation color"><span></span></button></div>
   <div id="comment-popover" class="comment-popover" hidden><div class="popover-heading"><strong>Add a thought</strong><button id="close-comment" class="icon-button" aria-label="Close comment"><span data-icon="close"></span></button></div><blockquote id="comment-quote"></blockquote><form id="comment-form"><textarea id="comment-body" placeholder="A question, a thought, a connection…" aria-label="Your comment" required maxlength="20000"></textarea><div class="composer-footer"><span>⌘ Enter to post</span><button type="submit" class="button primary">Post comment<span data-icon="up"></span></button></div></form></div>
+  <div id="annotation-popover" class="annotation-popover" role="dialog" aria-label="Annotation beside selected passage" tabindex="-1" hidden></div>
   <div id="floating-menu" class="floating-menu" hidden></div>
   <dialog id="modal"><form id="modal-form"><div class="modal-heading"><h2 id="modal-title"></h2><button type="button" id="modal-close" class="icon-button" aria-label="Close dialog"><span data-icon="close"></span></button></div><div id="modal-body"></div><div class="modal-footer"><button type="button" id="modal-cancel" class="button subtle">Cancel</button><button type="submit" id="modal-submit" class="button primary">Save</button></div></form></dialog>
   <div id="drop-overlay" class="drop-overlay" hidden><div><span data-icon="upload"></span><h2>A new idea is landing.</h2><p>Drop documents to add them to this folder.</p></div></div>

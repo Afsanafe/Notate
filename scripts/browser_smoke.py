@@ -40,7 +40,7 @@ def sample_pdf():
     output = io.BytesIO(); writer.write(output); return output.getvalue()
 
 
-def select_text(page, selector, quote):
+def select_text(page, selector, quote, existing=False):
     page.locator(selector).evaluate('''(container, quote) => {
       const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
       let node; while (node = walker.nextNode()) {
@@ -54,7 +54,14 @@ def select_text(page, selector, quote):
       }
       throw new Error('Selection text not found: ' + quote);
     }''',quote)
-    expect(page.locator('#selection-toolbar')).to_be_visible()
+    expect(page.locator('#annotation-popover' if existing else '#selection-toolbar')).to_be_visible()
+
+
+def click_mark(page, kind, segment=0):
+    mark = page.locator(f'.annotation-mark.{kind}').nth(segment)
+    bounds = mark.bounding_box()
+    assert bounds
+    page.mouse.click(bounds['x']+bounds['width']*.55,bounds['y']+bounds['height']*.5)
 
 
 def run(additional_pdf=None):
@@ -103,6 +110,59 @@ def run(additional_pdf=None):
                 select_text(page,'#note-content','discovery'); page.locator('[data-annotate="strike"]').click()
                 expect(page.locator('.annotation-mark.strike')).to_have_count(1)
                 print('Nested folders, note autosave, anchored comments, replies, underline, and strikethrough work.',flush=True)
+
+                if page.locator('html').get_attribute('data-theme') != 'dark': page.locator('#theme-toggle').click()
+                expect(page.locator('html')).to_have_attribute('data-theme','dark')
+                assert page.locator('.annotation-card').first.evaluate(r'(node) => getComputedStyle(node).backgroundColor.match(/\d+/g).slice(0,3).every(channel => Number(channel) < 120)'), 'Annotation cards must use a dark reading surface.'
+                page.set_viewport_size({'width':1050,'height':900})
+                entire_note = 'A good question starts a discovery. Evidence helps us find an answer.'
+                select_text(page,'#note-content',entire_note); page.locator('[data-annotate="highlight"]').click()
+                expect(page.locator('.annotation-mark.highlight')).to_have_count(2)
+                highlight_id = page.locator('.annotation-mark.highlight').first.get_attribute('data-annotation')
+                click_mark(page,'highlight',1)
+                expect(page.locator('#annotation-popover')).to_be_visible()
+                expect(page.locator('#annotations-list .annotation-card.selected')).to_have_attribute('data-annotation',highlight_id)
+                expect(page.locator('.annotation-mark.highlight.selected')).to_have_count(2)
+                page.locator('.popup-reply-form textarea').fill('The whole passage is connected to this thought.')
+                page.locator('.popup-reply-form button[type="submit"]').click()
+                expect(page.locator('.popup-comment-text')).to_have_text('The whole passage is connected to this thought.')
+                expect(page.locator(f'#annotations-list [data-annotation="{highlight_id}"] .comment-text')).to_have_text('The whole passage is connected to this thought.')
+                page.locator('.popup-close').click()
+                select_text(page,'#note-content','find an answer',existing=True)
+                expect(page.locator('#annotation-popover')).to_have_attribute('data-annotation',highlight_id)
+                expect(page.locator('#selection-toolbar')).to_be_hidden()
+                expect(page.locator('#annotation-count')).to_have_text('4')
+                page.locator('.popup-resolve').click(); expect(page.locator('.popup-label')).to_contain_text('Resolved')
+                page.locator('.popup-resolve').click(); expect(page.locator('.popup-label')).not_to_contain_text('Resolved')
+                page.screenshot(path=str(ARTIFACTS/'dark-note-popup.png'),full_page=True)
+
+                # A contained selection can match overlapping annotations; choose the thread.
+                select_text(page,'#note-content','good question',existing=True)
+                expect(page.locator('.popup-matches')).to_contain_text('2 marks')
+                page.locator('.popup-matches button').filter(has_text='Comment thread').click()
+                expect(page.locator('.popup-comment-text')).to_have_count(2)
+                selected_id = page.locator('#annotation-popover').get_attribute('data-annotation')
+                expect(page.locator('#annotations-list .annotation-card.selected')).to_have_attribute('data-annotation',selected_id)
+                page.locator('#toggle-popups').click(); expect(page.locator('#annotation-popover')).to_be_hidden()
+                click_mark(page,'comment'); expect(page.locator('#annotation-popover')).to_be_hidden()
+                expect(page.locator('#annotations-list .annotation-card.selected')).to_have_attribute('data-annotation',selected_id)
+                page.reload(); expect(page.locator('#note-content')).to_contain_text(entire_note)
+                expect(page.locator('html')).to_have_attribute('data-theme','dark')
+                expect(page.locator('#toggle-popups')).to_have_attribute('aria-pressed','false')
+                page.locator('[data-view="all"]').click(); page.locator('.file-card').filter(has_text='Welcome to Notate').click()
+                expect(page.locator('#toggle-popups')).to_have_attribute('aria-pressed','true')
+                page.locator('.file-card').filter(has_text='My research findings').click()
+                expect(page.locator('#toggle-popups')).to_have_attribute('aria-pressed','false')
+                page.locator('#toggle-popups').click()
+                page.locator('.annotation-mark.highlight').last.focus(); page.keyboard.press('Enter')
+                expect(page.locator('#annotation-popover')).to_be_visible()
+                page.keyboard.press('Escape'); expect(page.locator('#annotation-popover')).to_be_hidden()
+                page.locator(f'#annotations-list [data-annotation="{highlight_id}"] .annotation-menu').click()
+                page.locator('#floating-menu .menu-item').filter(has_text='Delete annotation').click(); page.locator('#modal-submit').click()
+                expect(page.locator('#annotation-count')).to_have_text('3')
+                expect(page.locator('#annotations-list .comment-text')).to_have_count(2)
+                page.set_viewport_size({'width':1512,'height':982})
+                print('Dark mode, wrapped passage grouping, contained selections, overlapping marks, popup replies, and per-document preferences work.',flush=True)
 
                 second = context.new_page(); second.goto(url)
                 expect(second.locator('#document-title')).to_have_text('My research findings')
@@ -153,6 +213,19 @@ def run(additional_pdf=None):
                 page.reload(); expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
                 expect(page.locator('.annotation-mark.comment')).to_have_count(1)
                 expect(page.locator('.comment-text')).to_have_count(2)
+                click_mark(page,'comment')
+                expect(page.locator('#annotation-popover')).to_be_visible()
+                expect(page.locator('.popup-comment-text')).to_have_count(2)
+                popup_box = page.locator('#annotation-popover').bounding_box()
+                passage_box = page.locator('.annotation-mark.comment').bounding_box()
+                assert popup_box['y']+popup_box['height'] <= passage_box['y']+2 or popup_box['y'] >= passage_box['y']+passage_box['height']-2, 'Popup should sit above or below its passage.'
+                assert popup_box['x'] >= 0 and popup_box['x']+popup_box['width'] <= 1512
+                page.screenshot(path=str(ARTIFACTS/'dark-pdf-popup.png'),full_page=True)
+                page.locator('#toggle-popups').click(); click_mark(page,'comment'); expect(page.locator('#annotation-popover')).to_be_hidden()
+                expect(page.locator('#annotations-list .annotation-card.selected')).to_be_visible()
+                page.reload(); expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
+                expect(page.locator('#toggle-popups')).to_have_attribute('aria-pressed','false')
+                page.locator('#toggle-popups').click()
                 page.screenshot(path=str(ARTIFACTS/'desktop-web.png'),full_page=True)
                 print(f'PDF text selection, zoom, lazy pages, reload persistence work. Import to first text layer: {pdf_open:.2f}s.',flush=True)
 
@@ -161,6 +234,12 @@ def run(additional_pdf=None):
                 phone.locator('#sidebar-toggle').click(); expect(phone.locator('#sidebar')).to_be_visible()
                 phone.locator('.file-card').filter(has_text='A field guide').click(); expect(phone.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
                 phone.locator('#toggle-annotations').click(); expect(phone.locator('#annotations-panel')).to_be_visible()
+                phone.locator('#close-annotations').click()
+                phone.locator('#theme-toggle').click(); expect(phone.locator('html')).to_have_attribute('data-theme','dark')
+                click_mark(phone,'comment'); expect(phone.locator('#annotation-popover')).to_be_visible()
+                mobile_popup = phone.locator('#annotation-popover').bounding_box()
+                assert mobile_popup['x'] >= 0 and mobile_popup['x']+mobile_popup['width'] <= 390
+                phone.locator('.popup-close').click()
                 phone.screenshot(path=str(ARTIFACTS/'mobile-web.png'),full_page=True)
                 assert phone.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile page overflows'
                 print('Mobile navigation, reader, and annotation panel work.',flush=True)
