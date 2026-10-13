@@ -185,6 +185,98 @@ def test_two_initial_notepad_saves_cannot_overwrite_one_another(client):
     assert client.get(path).json() == winning
 
 
+@pytest.mark.parametrize('document_kind', ['note', 'text', 'pdf'])
+def test_passage_pad_links_commit_both_sides_sync_and_restore(client, app, tmp_path, pdf_bytes, document_kind):
+    if document_kind == 'note':
+        document = new_note(client)
+    else:
+        filename, data, mime = ('reading.pdf',pdf_bytes,'application/pdf') if document_kind == 'pdf' else ('reading.txt',b'A good question starts a discovery.','text/plain')
+        document = client.post('/api/import',files={'file':(filename,data,mime)}).json()
+    item_id = document['id']
+    anchor = {'type':'pdf','pages':[{'page':1,'rects':[{'x':.1,'y':.1,'width':.3,'height':.02}]}]} if document_kind == 'pdf' else {'type':'text','start':0,'end':15}
+    with client.websocket_connect('/api/events') as socket:
+        socket.receive_json()
+        response = client.post(f'/api/items/{item_id}/pad-links',json={'quote':'A good question','anchor':anchor,'revision':0},headers={'X-Notate-Client':'link-window'})
+        assert response.status_code == 201
+        result = response.json(); annotation, pad = result['annotation'], result['notepad']
+        events = [socket.receive_json(),socket.receive_json()]
+        assert [event['scope'] for event in events] == ['notepad','annotations']
+        assert all(event['id'] == item_id and event['client'] == 'link-window' for event in events)
+    assert annotation['kind'] == 'pad' and annotation['color'] == 'orange'
+    assert annotation['anchor'] == anchor and annotation['quote'] == 'A good question'
+    assert pad['markdown'] == f'[A good question](#notate-passage-{annotation["id"]})\n\n'
+    assert pad['revision'] == 1
+    # Metadata lives in the ordinary workspace backup and JSON export.
+    exported = client.get(f'/api/items/{item_id}/export').json()
+    assert exported['notepad'] == pad and exported['annotations'] == [annotation]
+    backup = client.get('/api/backup')
+    with zipfile.ZipFile(io.BytesIO(backup.content)) as archive:
+        archive.extractall(tmp_path/'linked-workspace')
+    with TestClient(create_app(tmp_path/'linked-workspace')) as restored:
+        assert restored.get(f'/api/items/{item_id}/notepad').json() == pad
+        assert restored.get(f'/api/items/{item_id}/annotations').json() == [annotation]
+    assert client.delete(f'/api/items/{item_id}').status_code == 200
+    with app.state.store.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM annotations WHERE item_id=?',(item_id,)).fetchone()[0] == 0
+        assert db.execute('SELECT COUNT(*) FROM notepads WHERE item_id=?',(item_id,)).fetchone()[0] == 0
+
+
+def test_link_existing_pad_words_utf16_edit_and_unlink_preserves_text(client):
+    document = new_note(client); item_id = document['id']; path = f'/api/items/{item_id}/notepad'
+    source = '# Findings\n\n🌟 A hypothesis and an existing [site](https://example.test).\n'
+    client.patch(path,json={'revision':0,'markdown':source})
+    start = len(source[:source.index('hypothesis')].encode('utf-16-le'))//2
+    body = {'quote':'A good question','anchor':{'type':'text','start':0,'end':15},'revision':1,
+            'selection':{'start':start,'end':start+10,'text':'hypothesis'}}
+    response = client.post(f'/api/items/{item_id}/pad-links',json=body)
+    assert response.status_code == 201
+    result = response.json(); link_id = result['annotation']['id']
+    assert result['notepad']['markdown'] == source.replace('hypothesis',f'[hypothesis](#notate-passage-{link_id})')
+    # Editing or moving the linked label retains its destination in Markdown.
+    edited = result['notepad']['markdown'].replace('hypothesis','[nested] idea')
+    assert client.patch(path,json={'revision':2,'markdown':edited}).status_code == 200
+    assert client.delete(f'/api/annotations/{link_id}').status_code == 200
+    assert client.get(path).json()['markdown'] == source.replace('hypothesis','[nested] idea')
+    assert client.get(path).json()['revision'] == 4
+    assert client.get(f'/api/items/{item_id}/annotations').json() == []
+
+
+def test_pad_link_validation_and_conflicts_leave_no_partial_links(client):
+    from concurrent.futures import ThreadPoolExecutor
+    document = new_note(client); item_id = document['id']; path = f'/api/items/{item_id}/pad-links'
+    body = {'quote':'A good question','anchor':{'type':'text','start':0,'end':15},'revision':0}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: client.post(path,json=body),range(2)))
+    assert sorted(response.status_code for response in responses) == [201,409]
+    winner = next(response.json() for response in responses if response.status_code == 201)
+    assert client.get(f'/api/items/{item_id}/annotations').json() == [winner['annotation']]
+    assert client.get(f'/api/items/{item_id}/notepad').json() == winner['notepad']
+    invalid = {**body,'revision':1,'selection':{'start':999999,'end':1000000,'text':'x'}}
+    assert client.post(path,json=invalid).status_code == 422
+    assert client.post(path,json={**invalid,'selection':{'start':0,'end':1,'text':'wrong'}}).status_code == 422
+    assert client.post(path,json={**body,'revision':1,'quote':'   '}).status_code == 422
+    assert client.get(f'/api/items/{item_id}/notepad').json() == winner['notepad']
+    assert client.get(f'/api/items/{item_id}/annotations').json() == [winner['annotation']]
+
+
+def test_pad_link_response_survives_document_deletion_after_commit(client, app, monkeypatch):
+    document = new_note(client); item_id = document['id']
+    publish = app.state.hub.publish
+
+    async def delete_after_commit(request, scope, changed_id):
+        if scope == 'annotations' and changed_id == item_id:
+            with app.state.store.connect() as db:
+                db.execute('DELETE FROM items WHERE id=?',(item_id,))
+        await publish(request,scope,changed_id)
+
+    monkeypatch.setattr(app.state.hub,'publish',delete_after_commit)
+    response = client.post(f'/api/items/{item_id}/pad-links',json={
+        'quote':'A good question','anchor':{'type':'text','start':0,'end':15},'revision':0})
+    assert response.status_code == 201
+    assert response.json()['annotation']['kind'] == 'pad'
+    assert client.get(f'/api/items/{item_id}/notepad').status_code == 404
+
+
 def test_nested_folder_cycles_and_nonempty_delete(client):
     root = client.post('/api/folders',json={'name':'Research'}).json()
     child = client.post('/api/folders',json={'name':'Questions','parent_id':root['id']}).json()

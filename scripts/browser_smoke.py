@@ -41,6 +41,8 @@ def sample_pdf():
 
 
 def select_text(page, selector, quote, existing=False):
+    expect(page.locator(selector)).to_be_visible()
+    expect(page.locator(selector)).to_contain_text(quote)
     page.locator(selector).evaluate('''(container, quote) => {
       const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
       let node; while (node = walker.nextNode()) {
@@ -163,6 +165,144 @@ def check_workspace_layout(page):
     page.locator('#zoom-fit').click(); expect(first_page.locator('.textLayer')).to_be_visible()
     divider.dblclick(); expect(first_page.locator('.textLayer')).to_be_visible()
     print('Resizable reader, drag performance, page-position preservation, layout persistence, navigation edge hover, and keyboard controls work.',flush=True)
+
+
+def check_pad_passage_links(page, context, url):
+    original_id = page.locator('.file-card.active').get_attribute('data-id')
+    theme = page.locator('html').get_attribute('data-theme')
+    source = 'Evidence follows a question.\n\n' + '\n'.join(f'Reading observation {number}: keep track of what the evidence says.' for number in range(70)) + '\n\nFindings need a reliable source.'
+    page.locator('#file-input').set_input_files({'name':'Linked reading passages.txt','mimeType':'text/plain','buffer':source.encode()})
+    expect(page.locator('#document-title')).to_have_text('Linked reading passages')
+    item_id = page.locator('.file-card.active').get_attribute('data-id')
+    select_text(page,'#note-content','Evidence follows a question.')
+    page.locator('[data-annotate="pad"]').click()
+    expect(page.locator('[data-annotate="pad"]')).to_be_enabled()
+    expect(page.locator('[data-filter="notepad"]')).to_have_attribute('aria-selected','true')
+    expect(page.locator('#notepad-editor .md-pad-link')).to_have_text('Evidence follows a question.')
+    assert '#notate-passage-' not in page.locator('#notepad-editor .cm-content').inner_text(), 'Live links must hide their destination syntax.'
+    records = page.request.get(f'{url}/api/items/{item_id}/annotations').json()
+    auto_id = records[0]['id']
+    assert records[0]['kind'] == 'pad'
+    link = page.locator(f'#notepad-editor [data-passage-link="{auto_id}"]')
+    link.click(); expect(page.locator('#reader')).to_be_focused()
+    expect(page.locator(f'#reader [data-annotation="{auto_id}"]')).to_have_class('annotation-mark pad orange selected')
+    click_mark(page,'pad')
+    expect(page.locator('#notepad-editor .cm-content')).to_be_focused()
+
+    editor = page.locator('#notepad-editor .cm-content')
+    editor.press('ControlOrMeta+End'); editor.press_sequentially('My interpretation is a hypothesis.')
+    editor.press('ArrowLeft')
+    for _ in range(10): editor.press('Shift+ArrowLeft')
+    expect(page.locator('#notepad-selection-toolbar')).to_be_visible()
+    page.locator('#link-pad-selection').click()
+    expect(page.locator('#pad-link-banner')).to_be_visible()
+    expect(page.locator('#pad-link-target')).to_have_text('hypothesis')
+    select_text(page,'#note-content','Findings need a reliable source.')
+    expect(page.locator('#pad-action-label')).to_have_text('Link to pad')
+    page.locator('[data-annotate="pad"]').click()
+    expect(page.locator('[data-annotate="pad"]')).to_be_enabled()
+    expect(page.locator('#pad-link-banner')).to_be_hidden()
+    expect(page.locator('#notepad-editor .md-pad-link')).to_have_count(2)
+    records = page.request.get(f'{url}/api/items/{item_id}/annotations').json()
+    word_id = next(record['id'] for record in records if record['quote'] == 'Findings need a reliable source.')
+    word_link = page.locator(f'#notepad-editor [data-passage-link="{word_id}"]')
+    expect(word_link).to_have_text('hypothesis')
+    word_link.click()
+    try:
+        page.wait_for_function('document.querySelector("#reader").scrollTop > 1000',timeout=5000)
+    except Exception:
+        print(page.evaluate('''() => ({
+          scroll:document.querySelector('#reader').scrollTop,
+          height:document.querySelector('#reader').scrollHeight,
+          focused:document.activeElement.outerHTML.slice(0,250),
+          toast:document.querySelector('#toast').textContent,
+          links:[...document.querySelectorAll('[data-passage-link]')].map(node => [node.dataset.passageLink,node.textContent]),
+          marks:[...document.querySelectorAll('#reader .annotation-mark')].map(node => [node.dataset.annotation,node.className,node.getBoundingClientRect().top])
+        })'''),flush=True)
+        page.screenshot(path=str(ARTIFACTS/'pad-link-failure.png'),full_page=True)
+        raise
+    mark = page.locator(f'#reader [data-annotation="{word_id}"]').first
+    page.wait_for_function('''id => {
+      const mark = document.querySelector('#reader [data-annotation="'+id+'"]'), reader = document.querySelector('#reader');
+      const box = mark.getBoundingClientRect(), bounds = reader.getBoundingClientRect();
+      return box.top >= bounds.top && box.bottom <= bounds.bottom;
+    }''',arg=word_id)
+    mark.evaluate('node => node.click()')
+    expect(editor).to_be_focused()
+    expect(word_link).to_have_text('hypothesis')
+    # This is a normal editable Markdown link; changing its label keeps the destination.
+    # The reader-to-pad jump selected the exact linked word for us.
+    editor.press_sequentially('working idea')
+    expect(word_link).to_have_text('working idea')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    saved = page.request.get(f'{url}/api/items/{item_id}/notepad').json()['markdown']
+    assert f'[working idea](#notate-passage-{word_id})' in saved
+    assert 'My interpretation is a ' in saved
+    page.locator('#notepad-source').click(); expect(editor).to_contain_text('#notate-passage-')
+    page.locator('#notepad-source').click(); assert '#notate-passage-' not in editor.inner_text()
+    if page.locator('html').get_attribute('data-theme') != 'light': page.locator('#theme-toggle').click()
+    assert word_link.evaluate('node => getComputedStyle(node).textDecorationLine') == 'underline'
+    assert word_link.evaluate('node => getComputedStyle(node).color') == 'rgb(154, 75, 10)'
+    page.screenshot(path=str(ARTIFACTS/'pad-links-light.png'),full_page=True)
+    page.locator('#theme-toggle').click()
+    assert word_link.evaluate('node => getComputedStyle(node).color') == 'rgb(255, 193, 124)'
+    page.screenshot(path=str(ARTIFACTS/'pad-links-dark.png'),full_page=True)
+
+    second = context.new_page(); second.goto(url)
+    expect(second.locator('#document-title')).to_have_text('Linked reading passages')
+    second.locator('[data-filter="notepad"]').click()
+    expect(second.locator(f'[data-passage-link="{word_id}"]')).to_have_text('working idea')
+    page.reload(); expect(page.locator('#note-content')).to_contain_text('Findings need a reliable source.')
+    page.locator(f'#annotations-list [data-annotation="{word_id}"] .annotation-copy').click()
+    page.wait_for_function("window.__copiedAnnotationText?.includes('> working idea')")
+    page.locator('[data-filter="notepad"]').click()
+    expect(page.locator(f'[data-passage-link="{word_id}"]')).to_have_text('working idea')
+    # Removing a saved link keeps the user's words and synchronizes both panes.
+    page.locator('[data-filter="all"]').click()
+    card = page.locator(f'#annotations-list [data-annotation="{word_id}"]')
+    card.locator('.annotation-copy').click()
+    page.wait_for_function("window.__copiedAnnotationText?.includes('## Linked Notepad text')")
+    assert '> working idea' in page.evaluate('window.__copiedAnnotationText')
+    card.locator('.annotation-menu').click()
+    page.locator('#floating-menu .menu-item').filter(has_text='Remove Notepad link').click(); page.locator('#modal-submit').click()
+    expect(page.locator(f'#reader [data-annotation="{word_id}"]')).to_have_count(0)
+    expect(second.locator(f'[data-passage-link="{word_id}"]')).to_have_count(0)
+    expect(second.locator('#notepad-editor .cm-content')).to_contain_text('My interpretation is a working idea.')
+    second.close()
+    page.locator('[data-filter="notepad"]').click()
+    expect(page.locator('#notepad-editor .md-pad-link')).to_have_count(1)
+    editor.press('ControlOrMeta+End')
+    editor.press_sequentially('\n\n| Topic | Finding |\n| --- | --- |\n| tableword | details |\n\n')
+    expect(page.locator('#notepad-editor .md-table-preview td').first).to_have_text('tableword')
+    page.locator('#notepad-editor .md-table-preview td').first.click()
+    page.locator('#notepad-link').click()
+    select_text(page,'#note-content','Reading observation 69')
+    page.locator('[data-annotate="pad"]').click()
+    expect(page.locator('[data-annotate="pad"]')).to_be_enabled()
+    records = page.request.get(f'{url}/api/items/{item_id}/annotations').json()
+    table_id = next(record['id'] for record in records if record['quote'] == 'Reading observation 69')
+    editor.press('ControlOrMeta+End')
+    table_link = page.locator(f'#notepad-editor .md-table-preview [data-passage-link="{table_id}"]')
+    expect(table_link).to_have_text('tableword')
+    table_link.click(); expect(page.locator('#reader')).to_be_focused()
+    expect(page.locator(f'#reader [data-annotation="{table_id}"]')).to_have_class('annotation-mark pad orange selected')
+    table_link.click(modifiers=['ControlOrMeta'])
+    expect(editor).to_be_focused()
+    editor.press_sequentially('table finding'); editor.press('ControlOrMeta+End')
+    expect(table_link).to_have_text('table finding')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    # Cancelling the association does not create a mark or change Notepad.
+    editor.press_sequentially('Unlinked words')
+    for _ in range(5): editor.press('Shift+ArrowLeft')
+    page.locator('#notepad-link').click(); expect(page.locator('#pad-link-banner')).to_be_visible()
+    page.keyboard.press('Escape'); expect(page.locator('#pad-link-banner')).to_be_hidden()
+    assert len(page.request.get(f'{url}/api/items/{item_id}/annotations').json()) == 2
+    if page.locator('html').get_attribute('data-theme') != theme: page.locator('#theme-toggle').click()
+    page.locator(f'.file-card[data-id="{original_id}"]').click()
+    expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
+    assert page.request.delete(f'{url}/api/items/{item_id}').status == 200
+    expect(page.locator(f'.file-card[data-id="{item_id}"]')).to_have_count(0)
+    print('Reading-to-Pad links, selected-word associations, bidirectional jumps, editable labels, light/dark styles, reload, sync, copy, unlink, and cancellation work.',flush=True)
 
 
 def check_markdown_editor(page, url):
@@ -475,7 +615,7 @@ def check_notepad_deletion(page, url):
     print('Deliberate document deletion clears its notepad; remote deletion preserves drafts and can recover them as a new note.',flush=True)
 
 
-def run(additional_pdf=None):
+def run(additional_pdf=None, links_only=False):
     ARTIFACTS.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='notate-browser-') as temporary:
         with socket.socket() as socket_handle:
@@ -500,6 +640,14 @@ def run(additional_pdf=None):
                 page.goto(url); expect(page.locator('#document-title')).to_have_text('Welcome to Notate')
                 expect(page.locator('#connection-label')).to_contain_text('synced')
                 print('Workspace loads and connects to live sync.',flush=True)
+                if links_only:
+                    page.locator('#file-input').set_input_files({'name':'A field guide to better questions.pdf','mimeType':'application/pdf','buffer':sample_pdf()})
+                    expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
+                    check_pad_passage_links(page,context,url)
+                    assert not errors, errors
+                    assert not outside_requests, outside_requests
+                    browser.close()
+                    return
                 check_markdown_editor(page,url)
                 check_comments_notepad_and_shortcuts(page,url,'Meta','Mac shortcut checks')
                 check_inline_answer_shortcut(page,url,'Meta')
@@ -770,6 +918,7 @@ def run(additional_pdf=None):
                 page.locator('#toggle-popups').click()
                 page.screenshot(path=str(ARTIFACTS/'desktop-web.png'),full_page=True)
                 print(f'PDF text selection, zoom, lazy pages, reload persistence work. Import to first text layer: {pdf_open:.2f}s.',flush=True)
+                check_pad_passage_links(page,context,url)
 
                 mobile = browser.new_context(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
                 phone = mobile.new_page(); phone.goto(url); expect(phone.locator('#document-title')).to_have_text('A field guide to better questions')
@@ -782,8 +931,17 @@ def run(additional_pdf=None):
                 mobile_popup = phone.locator('#annotation-popover').bounding_box()
                 assert mobile_popup['x'] >= 0 and mobile_popup['x']+mobile_popup['width'] <= 390
                 phone.locator('.popup-close').click()
+                select_text(phone,'.pdf-page[data-page="1"] .textLayer','Your discoveries belong together in Notate.')
+                phone.locator('[data-annotate="pad"]').click()
+                expect(phone.locator('#annotations-panel')).to_be_visible()
+                expect(phone.locator('#notepad-editor .md-pad-link')).to_have_text('Your discoveries belong together in Notate.')
+                phone.locator('#notepad-editor .md-pad-link').click()
+                expect(phone.locator('#annotations-panel')).to_be_hidden()
+                expect(phone.locator('#reader')).to_be_focused()
+                assert phone.evaluate('document.documentElement.scrollWidth') <= 390
                 phone.screenshot(path=str(ARTIFACTS/'mobile-web.png'),full_page=True)
                 assert phone.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile page overflows'
+                phone.locator('#toggle-annotations').click(); expect(phone.locator('#annotations-panel')).to_be_visible()
                 phone.locator('#close-annotations').click()
                 phone.locator('#sidebar-toggle').click()
                 phone.locator('.file-card').filter(has_text='Markdown live preview').click()
@@ -840,4 +998,6 @@ def run(additional_pdf=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Check the Notate web UI in an isolated workspace.')
     parser.add_argument('--pdf',type=Path,help='Also check import, rendering, and annotations on this PDF.')
-    run(parser.parse_args().pdf)
+    parser.add_argument('--links-only',action='store_true',help='Check passage links in an isolated workspace without the other UI checks.')
+    args = parser.parse_args()
+    run(args.pdf,args.links_only)

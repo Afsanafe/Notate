@@ -276,3 +276,18 @@ body.resizing-panels, body.resizing-panels * { cursor: col-resize !important; us
 @container reading-pane (max-width: 390px) {
   .read-mode > svg { display: none; }
 }
+
+/* Bidirectional reading-passage links in the document Notepad. */
+:root { --pad-link-ink: #9a4b0a; --pad-link-bg: #f5a84f35; }
+:root[data-theme="dark"] { --pad-link-ink: #ffc17c; --pad-link-bg: #ef983e30; }
+.markdown-editor .md-pad-link { color: var(--pad-link-ink); background: var(--pad-link-bg); text-decoration: underline; text-decoration-color: var(--pad-link-ink); text-underline-offset: 3px; border-radius: 2px; cursor: pointer; }
+.md-pad-link:focus-visible { outline: 2px solid var(--pad-link-ink); outline-offset: 2px; }
+.annotation-mark.pad { background: #f5a84f55; border-bottom: 2px solid #c66e20; border-radius: 0; }
+:root[data-theme="dark"] .annotation-mark.pad { background: #ed963e4a; border-bottom-color: #ffbd77; }
+.annotation-card .annotation-quote.orange span { background: var(--pad-link-bg); color: var(--pad-link-ink); box-shadow: 3px 0 var(--pad-link-bg), -3px 0 var(--pad-link-bg); text-decoration: underline; }
+.pad-open { width: 100%; justify-content: center; font-size: 10px; }
+.pad-link-banner { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--pad-link-bg); font-size: 11px; line-height: 1.5; }
+.pad-link-banner > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pad-link-banner .button { flex-shrink: 0; padding: 5px 8px; font-size: 10px; }
+.notepad-toolbar button:disabled { opacity: .35; cursor: default; }
+#selection-toolbar { flex-wrap: wrap; }

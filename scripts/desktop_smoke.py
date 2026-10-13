@@ -61,6 +61,39 @@ def run():
                 window.evaluate_js('''(() => {
                   const container = document.querySelector('.pdf-page .textLayer');
                   const walker = document.createTreeWalker(container,NodeFilter.SHOW_TEXT);
+                  const quote = 'Your discoveries belong together in Notate.';
+                  let node; while (node = walker.nextNode()) {
+                    const start = node.textContent.indexOf(quote); if (start < 0) continue;
+                    const range = document.createRange(); range.setStart(node,start); range.setEnd(node,start+quote.length);
+                    getSelection().removeAllRanges(); getSelection().addRange(range);
+                    container.dispatchEvent(new PointerEvent('pointerup',{bubbles:true})); return;
+                  }
+                  throw new Error('No native Pad selection found.');
+                })()''')
+                wait_for("document.querySelector('#selection-toolbar').hidden === false")
+                window.evaluate_js("document.querySelector('[data-annotate=pad]').click()")
+                wait_for("document.querySelector('#notepad-editor .md-pad-link')?.textContent === 'Your discoveries belong together in Notate.'")
+                window.evaluate_js("window.__padLinkId = document.querySelector('#notepad-editor .md-pad-link').dataset.passageLink; document.execCommand('insertText',false,'Desktop discovery')")
+                wait_for("document.querySelector('#notepad-editor .md-pad-link')?.textContent === 'Desktop discovery'")
+                wait_for("document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
+                link_id = window.evaluate_js('window.__padLinkId')
+                assert f'[Desktop discovery](#notate-passage-{link_id})' in httpx.get(url+f'/api/items/{item_id}/notepad').json()['markdown']
+                window.evaluate_js("document.querySelector('#notepad-editor .md-pad-link').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0}))")
+                wait_for("document.activeElement.id === 'reader' && document.querySelector('#reader .annotation-mark.pad').classList.contains('selected')")
+                window.evaluate_js("document.querySelector('#reader .annotation-mark.pad').click()")
+                wait_for("document.activeElement === document.querySelector('#notepad-editor .cm-content')")
+                httpx.delete(url+f'/api/annotations/{link_id}').raise_for_status()
+                wait_for("!document.querySelector('#reader .annotation-mark.pad') && !document.querySelector('#notepad-editor .md-pad-link')")
+                wait_for("document.querySelector('#notepad-editor .cm-content').textContent.includes('Desktop discovery')")
+                # Keep the existing native Notepad check's empty starting state.
+                pad = httpx.get(url+f'/api/items/{item_id}/notepad').json()
+                httpx.patch(url+f'/api/items/{item_id}/notepad',json={'revision':pad['revision'],'markdown':''}).raise_for_status()
+                wait_for("!document.querySelector('#notepad-editor .cm-content').textContent.includes('Desktop discovery')")
+                window.evaluate_js("document.querySelector('[data-filter=all]').click()")
+                results['pad_passage_links'] = 'passed'
+                window.evaluate_js('''(() => {
+                  const container = document.querySelector('.pdf-page .textLayer');
+                  const walker = document.createTreeWalker(container,NodeFilter.SHOW_TEXT);
                   const quote = 'Reading is a conversation with an idea.';
                   let node;
                   while (node = walker.nextNode()) {

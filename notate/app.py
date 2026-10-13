@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import zipfile
@@ -26,6 +27,27 @@ from .storage import Store, identifier, timestamp
 STATIC = Path(__file__).parent / "static"
 MAX_UPLOAD = 100 * 1024 * 1024
 COLORS = Literal["yellow", "green", "blue", "pink"]
+
+
+def unlink_pad_text(source, annotation_id):
+    """Unwrap our Markdown links, including escaped/nested label brackets."""
+    openings, labels = [], {}
+    for match in re.finditer(r'\\[\s\S]|[\[\]]', source):
+        if match[0] == '[':
+            openings.append(match.start())
+        elif match[0] == ']' and openings:
+            labels[match.start()] = openings.pop()
+    marker = f'](#notate-passage-{annotation_id})'
+    changes = []
+    offset = 0
+    while (closing := source.find(marker, offset)) >= 0:
+        opening = labels.get(closing)
+        if opening is not None:
+            changes.append((opening, closing + len(marker), source[opening + 1:closing]))
+        offset = closing + len(marker)
+    for start, end, text in reversed(changes):
+        source = source[:start] + text + source[end:]
+    return source
 
 
 class FolderInput(BaseModel):
@@ -97,6 +119,19 @@ class LegacyNoteInput(BaseModel):
 class NotepadUpdate(BaseModel):
     revision: int = Field(ge=0)
     markdown: str = Field(max_length=5_000_000)
+
+
+class PadSelection(BaseModel):
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    text: str = Field(min_length=1, max_length=100_000)
+
+
+class PadLinkInput(BaseModel):
+    quote: str = Field(min_length=1, max_length=100_000)
+    anchor: dict
+    revision: int = Field(ge=0)
+    selection: PadSelection | None = None
 
 
 class SessionInput(BaseModel):
@@ -403,6 +438,55 @@ def create_app(data_dir: str | Path, token: str | None = None):
         else:
             raise HTTPException(422, "Select a passage before annotating.")
 
+    @app.post('/api/items/{item_id}/pad-links', status_code=201)
+    async def create_pad_link(item_id: str, body: PadLinkInput, request: Request):
+        item = item_or_404(item_id)
+        validate_anchor(body.anchor, item)
+        if not body.quote.strip():
+            raise HTTPException(422, 'Select a reading passage first.')
+        annotation_id, now = identifier(), timestamp()
+        with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('SELECT id FROM items WHERE id=?', (item_id,)).fetchone():
+                raise HTTPException(404, 'This document no longer exists.')
+            pad = db.execute('SELECT markdown,revision FROM notepads WHERE item_id=?', (item_id,)).fetchone()
+            source, revision = (pad['markdown'], pad['revision']) if pad else ('', 0)
+            if revision != body.revision:
+                raise HTTPException(409, 'This notepad changed in another window. Review the saved version before linking.')
+            if body.selection:
+                selection = body.selection
+                # CodeMirror uses UTF-16 offsets, including two units per emoji.
+                encoded = source.encode('utf-16-le')
+                if not selection.start < selection.end <= len(encoded) // 2:
+                    raise HTTPException(422, 'Select the Notepad text again.')
+                try:
+                    before = encoded[:selection.start * 2].decode('utf-16-le')
+                    label = encoded[selection.start * 2:selection.end * 2].decode('utf-16-le')
+                    after = encoded[selection.end * 2:].decode('utf-16-le')
+                except UnicodeDecodeError:
+                    raise HTTPException(422, 'Select complete characters in Notepad.')
+                if label != selection.text or not label.strip() or re.search(r'\n\s*\n', label) or '#notate-passage-' in label:
+                    raise HTTPException(422, 'Select unlinked Notepad text within one paragraph.')
+                markdown = before + f'[{label}](#notate-passage-{annotation_id})' + after
+            else:
+                label = re.sub(r'([\\`*_{}\[\]<>!|])', r'\\\1', ' '.join(body.quote.split()))
+                gap = '' if not source else '\n' if source.endswith('\n') else '\n\n'
+                markdown = source + gap + f'[{label}](#notate-passage-{annotation_id})\n\n'
+            if len(markdown) > 5_000_000:
+                raise HTTPException(422, 'The notepad is full. Shorten it before adding a link.')
+            record = {'item_id': item_id, 'markdown': markdown, 'revision': revision + 1, 'updated_at': now}
+            db.execute('''INSERT INTO notepads (item_id,markdown,revision,updated_at)
+                VALUES (:item_id,:markdown,:revision,:updated_at)
+                ON CONFLICT(item_id) DO UPDATE SET markdown=excluded.markdown,
+                    revision=excluded.revision, updated_at=excluded.updated_at''', record)
+            db.execute('INSERT INTO annotations VALUES (?,?,?,?,?,?,?,?)',
+                       (annotation_id, item_id, 'pad', 'orange', body.quote, json.dumps(body.anchor), 0, now))
+        await hub.publish(request, 'notepad', item_id)
+        await hub.publish(request, 'annotations', item_id)
+        return {'annotation': {'id': annotation_id, 'item_id': item_id, 'kind': 'pad', 'color': 'orange',
+                              'quote': body.quote, 'anchor': body.anchor, 'resolved': False,
+                              'created_at': now, 'comments': []}, 'notepad': record}
+
     @app.get("/api/items/{item_id}/annotations")
     def get_annotations(item_id: str):
         item_or_404(item_id)
@@ -449,9 +533,22 @@ def create_app(data_dir: str | Path, token: str | None = None):
 
     @app.delete("/api/annotations/{annotation_id}")
     async def delete_annotation(annotation_id: str, request: Request):
+        pad_changed = False
         with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             annotation = annotation_or_404(db, annotation_id)
+            if annotation['kind'] == 'pad':
+                pad = db.execute('SELECT markdown FROM notepads WHERE item_id=?', (annotation['item_id'],)).fetchone()
+                if pad:
+                    # Remove the link's Markdown wrapper while keeping its text.
+                    markdown = unlink_pad_text(pad['markdown'], annotation_id)
+                    if markdown != pad['markdown']:
+                        db.execute('UPDATE notepads SET markdown=?,revision=revision+1,updated_at=? WHERE item_id=?',
+                                   (markdown, timestamp(), annotation['item_id']))
+                        pad_changed = True
             db.execute("DELETE FROM annotations WHERE id=?", (annotation_id,))
+        if pad_changed:
+            await hub.publish(request, 'notepad', annotation['item_id'])
         await hub.publish(request, "annotations", annotation["item_id"])
         return {"ok": True}
 

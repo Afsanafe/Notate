@@ -33,6 +33,8 @@ const paths = {
   download:'<path d="M12 3v13m-4-4 4 4 4-4M4 17v4h16v-4"/>',
   copy:'<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
   menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
+  link:'<path d="m10 13 4-4M8 15l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M16 9l1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>',
+  notepad:'<rect x="5" y="3" width="15" height="18" rx="2"/><path d="M3 7h4M3 12h4M3 17h4M11 8h5M11 12h5M11 16h3"/>',
   moon:'<path d="M20.8 13.3A9 9 0 0 1 10.7 3.2 9 9 0 1 0 20.8 13.3Z"/>',
   sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>'
 };
@@ -52,6 +54,7 @@ const state = {
   popupPreferences: readLocal('notate-popup-preferences', {}), popupTarget: null,
   popupMatches: [], popupDrafts: new Map(), replyDrafts: new Map(), replyForms: new Map(), popupFrame: null, popupPending: false,
   notepad: null, notepadLoading: null,
+  pendingPadLink: null, linkingPad: false, padSelectionFrame: null,
   livePreview: readLocal('notate-live-preview', true)
 };
 let noteEditor = null;
@@ -353,6 +356,8 @@ function renderEmpty() {
   updatePopupToggle();
 }
 function resetReader() {
+  cancelPadLink(); cancelAnimationFrame(state.padSelectionFrame); state.padSelectionFrame = null;
+  $('#notepad-selection-toolbar').hidden = true;
   noteEditor?.destroy(); noteEditor = null; state.editing = false;
   if (state.notepad) clearTimeout(state.notepad.timer);
   notepadEditor?.destroy(); notepadEditor = null; state.notepad = null; state.notepadLoading = null;
@@ -365,6 +370,7 @@ function resetReader() {
   closeAnnotationPopover(); state.popupTarget = null; state.popupMatches = [];
 }
 async function openItem(id, edit = false, force = false) {
+  if (state.linkingPad && state.active) { toast('Finishing your passage link…'); return; }
   if (state.active?.id === id && !force) { if (edit) setEditMode(true); closeNavigationDrawer(); return; }
   if (!await flushNote()) return;
   const opening = ++state.opening;
@@ -459,14 +465,15 @@ function keepNotepadDraft(pad) { writeLocal(notepadDraftKey(pad.item_id),{markdo
 function updateNotepadState() {
   const pad = state.notepad, button = $('#notepad-save-state'), notice = $('#notepad-notice');
   if (!pad) return;
-  button.textContent = pad.conflict ? 'Review conflicting edits' : pad.saving ? 'Saving…' : pad.dirty ? 'Unsaved draft' : 'Saved locally';
+  button.textContent = state.linkingPad ? 'Linking passage…' : pad.conflict ? 'Review conflicting edits' : pad.saving ? 'Saving…' : pad.dirty ? 'Unsaved draft' : 'Saved locally';
   button.classList.toggle('dirty',pad.dirty); button.classList.toggle('conflict',pad.conflict);
   notice.textContent = pad.conflict ? 'Your draft is safe. Review the saved version before replacing it.' : pad.error || '';
   notice.hidden = !notice.textContent;
 }
 async function ensureNotepad() {
   $('#notepad-context').textContent = state.active?.title || 'Open a document to start a notepad.';
-  if (!state.active || state.notepad || state.notepadLoading) return;
+  if (!state.active || state.notepad) return;
+  if (state.notepadLoading) { await state.notepadLoading; return; }
   const id = state.active.id; $('#notepad-save-state').textContent = 'Opening…';
   $('#notepad-notice').hidden = true;
   const request = api(`/api/items/${id}/notepad`); state.notepadLoading = request;
@@ -483,7 +490,17 @@ async function ensureNotepad() {
     notepadEditor = createNoteEditor($('#notepad-editor'),pad.markdown,source => {
       pad.markdown = source; pad.dirty = true; keepNotepadDraft(pad); updateNotepadState();
       clearTimeout(pad.timer); if (!pad.conflict) pad.timer = setTimeout(saveNotepad,650);
-    },true,{ariaLabel:'Document notepad Markdown editor',placeholder:'Capture your thoughts about this document… Use # for a heading.'});
+    },true,{ariaLabel:'Document notepad Markdown editor',placeholder:'Capture your thoughts about this document… Use # for a heading.',
+      onPassageLink: jumpToLinkedPassage,
+      onSelectionChange: (selection,update) => {
+        const pending = state.pendingPadLink;
+        if (pending && update.docChanged) {
+          pending.start = update.changes.mapPos(pending.start,1); pending.end = update.changes.mapPos(pending.end,-1);
+          pending.text = update.state.doc.sliceString(pending.start,Math.max(pending.start,pending.end));
+          if (!pending.text.trim()) cancelPadLink(); else $('#pad-link-target').textContent = pending.text.slice(0,80);
+        }
+        schedulePadSelectionTools();
+      }});
     $('#notepad-source').setAttribute('aria-pressed','false'); updateNotepadState();
     if (pad.dirty && !pad.conflict) pad.timer = setTimeout(saveNotepad,650);
   } catch (error) {
@@ -522,8 +539,89 @@ async function synchronizeNotepad() {
   const latest = await api(`/api/items/${pad.item_id}/notepad`);
   if (state.notepad !== pad || latest.revision === pad.revision) return;
   if (pad.dirty || pad.saving) pad.conflict = true;
-  else { Object.assign(pad,latest); notepadEditor?.setSource(latest.markdown); }
+  else { cancelPadLink(); Object.assign(pad,latest); notepadEditor?.setSource(latest.markdown); }
   updateNotepadState();
+}
+function schedulePadSelectionTools() {
+  cancelAnimationFrame(state.padSelectionFrame);
+  state.padSelectionFrame = requestAnimationFrame(() => { state.padSelectionFrame = null; updatePadSelectionTools(); });
+}
+function updatePadSelectionTools() {
+  const toolbar = $('#notepad-selection-toolbar'); const editor = notepadEditor;
+  const allowed = !!editor && !state.linkingPad && editor.selectionCanLink() && editor.view.state.selection.main.to - editor.view.state.selection.main.from <= 100_000;
+  $('#notepad-link').disabled = !allowed;
+  toolbar.hidden = !allowed || state.filter !== 'notepad' || !editor.view.hasFocus || !!state.pendingPadLink;
+  if (toolbar.hidden) return;
+  const {from,to} = editor.view.state.selection.main; const first = editor.view.coordsAtPos(from), last = editor.view.coordsAtPos(to);
+  const bounds = $('#notepad-editor').getBoundingClientRect();
+  if (!first || !last || first.bottom < bounds.top || first.top > bounds.bottom) { toolbar.hidden = true; return; }
+  position(toolbar,first.left,first.top - toolbar.offsetHeight - 8 > 8 ? first.top - toolbar.offsetHeight - 8 : last.bottom + 8);
+}
+function cancelPadLink() {
+  state.pendingPadLink = null; $('#pad-link-banner').hidden = true; $('#pad-action-label').textContent = 'Pad';
+  $('[data-annotate="pad"]').title = 'Add this passage to Notepad';
+  $('#notepad-selection-toolbar').hidden = true;
+}
+async function beginPadLink() {
+  if (!notepadEditor?.selectionCanLink() || state.linkingPad) return;
+  const {from,to} = notepadEditor.view.state.selection.main;
+  if (to - from > 100_000) { toast('Select a smaller Notepad passage.',true); return; }
+  if (state.editing && !await flushNote()) return;
+  state.pendingPadLink = {itemId:state.active.id,start:from,end:to,text:notepadEditor.getSource().slice(from,to)};
+  $('#pad-link-target').textContent = state.pendingPadLink.text.slice(0,80); $('#pad-link-banner').hidden = false;
+  $('#pad-action-label').textContent = 'Link to pad'; $('[data-annotate="pad"]').title = 'Link this passage to your selected Notepad text';
+  $('#notepad-selection-toolbar').hidden = true; hideSelection(); closeAnnotationPopover();
+  if (state.editing) setEditMode(false);
+  if (innerWidth <= 860) $('#reading-workspace').classList.remove('panel-mobile-open');
+  $('#reader').focus({preventScroll:true}); toast('Select the source passage, then choose Link to pad.');
+}
+async function createPadLink() {
+  const selected = state.selection; if (!selected || selected.itemId !== state.active?.id || state.linkingPad) return;
+  const id = selected.itemId; state.linkingPad = true; let lockedEditor;
+  const button = $('[data-annotate="pad"]'); button.disabled = true;
+  updateNotepadState();
+  try {
+    await ensureNotepad(); if (!state.notepad || !await flushNote()) return;
+    const pending = state.pendingPadLink?.itemId === id ? {...state.pendingPadLink} : null;
+    const pad = state.notepad, source = pad.markdown;
+    lockedEditor = notepadEditor; lockedEditor.setReadOnly(true);
+    const result = await api(`/api/items/${id}/pad-links`,{method:'POST',body:{quote:selected.quote,anchor:selected.anchor,revision:pad.revision,
+      selection:pending ? {start:pending.start,end:pending.end,text:pending.text} : null}});
+    await refreshWorkspace().catch(() => {});
+    if (state.active?.id !== id || state.notepad !== pad) return;
+    // Retain any typing that happened while the link request was in flight.
+    if (pad.markdown !== source) {
+      pad.conflict = true; pad.error = 'Your passage link was saved. Review the saved Notepad to keep your newer typing.';
+      keepNotepadDraft(pad); updateNotepadState();
+    } else {
+      Object.assign(pad,result.notepad,{dirty:false,conflict:false,error:''}); writeLocal(notepadDraftKey(id),null);
+      notepadEditor.setSource(pad.markdown); updateNotepadState();
+    }
+    if (!state.annotations.some(record => record.id === result.annotation.id)) state.annotations.push(result.annotation);
+    state.selected = result.annotation.id;
+    hideSelection(); getSelection().removeAllRanges(); state.selection = null; cancelPadLink(); renderMarks();
+    lockedEditor.setReadOnly(false); lockedEditor = null;
+    await jumpToNotepad(result.annotation.id);
+  } catch (error) {
+    if (error.status === 409) { await synchronizeNotepad(); toast('Notepad changed in another window. Select your text again to link it.',true); }
+    else throw error;
+  } finally { if (lockedEditor?.view.dom.isConnected) lockedEditor.setReadOnly(false); state.linkingPad = false; button.disabled = false; updateNotepadState(); schedulePadSelectionTools(); }
+}
+async function jumpToNotepad(id) {
+  const record = state.annotations.find(record => record.id === id); if (!record || record.kind !== 'pad') return;
+  const itemId = state.active.id; closeAnnotationPopover(); hideSelection(); state.selected = id;
+  state.filter = 'notepad'; openPanel(); renderAnnotations(); await ensureNotepad();
+  if (state.active?.id !== itemId) return;
+  if (!notepadEditor?.revealPassageLink(id)) toast('The linked Notepad text was removed. The original reading passage is still marked.',true);
+  renderMarks(); schedulePadSelectionTools();
+}
+function jumpToLinkedPassage(id) {
+  const record = state.annotations.find(record => record.id === id);
+  if (!record || record.kind !== 'pad') { toast('This passage link no longer exists in this document.',true); return; }
+  cancelPadLink(); hideSelection(); $('#notepad-selection-toolbar').hidden = true;
+  focusAnnotation(id,true,{keepNotepad:true});
+  if (innerWidth <= 860) $('#reading-workspace').classList.remove('panel-mobile-open');
+  $('#reader').focus({preventScroll:true});
 }
 function downloadNotepad() {
   if (!state.notepad) return;
@@ -757,7 +855,7 @@ function captureSelection() {
   }
   state.selection = {quote,anchor,range:range.cloneRange(),itemId:state.active.id};
   const matches = matchingSelectionAnnotations(anchor, range);
-  if (matches.length) {
+  if (matches.length && !state.pendingPadLink) {
     hideSelection(); $('#comment-popover').hidden = true;
     focusAnnotation(matches[0].id, false, {matches:matches.map(record => record.id), range});
     return;
@@ -768,7 +866,7 @@ function showSelectionToolbar() {
   const range = state.selection?.range; if (!range) return;
   const rect = range.getBoundingClientRect(); const toolbar = $('#selection-toolbar'); toolbar.hidden = false;
   $('#selection-color').className = `color-trigger ${state.color}`;
-  const y = rect.top-45 > 8 ? rect.top-45 : rect.bottom+8;
+  const y = rect.top-toolbar.offsetHeight-8 > 8 ? rect.top-toolbar.offsetHeight-8 : rect.bottom+8;
   position(toolbar,Math.max(rect.left,rect.left+(rect.width-toolbar.offsetWidth)/2),y);
 }
 function hideSelection() { $('#selection-toolbar').hidden = true; }
@@ -799,7 +897,7 @@ $('#comment-form').onsubmit = action(async event => {
 });
 setupMarkdownComposer($('#comment-form'));
 $('#close-comment').onclick = () => { $('#comment-popover').hidden = true; };
-$$('[data-annotate]').forEach(button => { button.onmousedown = event => event.preventDefault(); button.onclick = action(() => button.dataset.annotate === 'comment' ? openCommentComposer() : annotate(button.dataset.annotate)); });
+$$('[data-annotate]').forEach(button => { button.onmousedown = event => event.preventDefault(); button.onclick = action(() => button.dataset.annotate === 'pad' ? createPadLink() : button.dataset.annotate === 'comment' ? openCommentComposer() : annotate(button.dataset.annotate)); });
 $('#selection-color').onmousedown = event => event.preventDefault();
 $('#selection-color').onclick = event => {
   const container = $('#floating-menu'); container.innerHTML = `<div class="color-options">${['yellow','green','blue','pink'].map(color => `<button class="color-option ${color} ${color === state.color ? 'active' : ''}" data-color="${color}" aria-label="${color} annotation color"></button>`).join('')}</div>`;
@@ -809,7 +907,7 @@ $('#selection-color').onclick = event => {
 
 function annotationMark(record, rectangle, percent) {
   const mark = document.createElement('button'); mark.type = 'button'; mark.className = `annotation-mark ${record.kind} ${record.color}${state.selected === record.id ? ' selected' : ''}`;
-  mark.dataset.annotation = record.id; mark.title = `${record.kind === 'strike' ? 'Strikethrough' : record.kind}: ${record.quote.slice(0,150)}`;
+  mark.dataset.annotation = record.id; mark.title = `${record.kind === 'pad' ? 'Open linked Notepad text' : record.kind === 'strike' ? 'Strikethrough' : record.kind}: ${record.quote.slice(0,150)}`;
   mark.setAttribute('aria-label',mark.title); const unit = percent ? '%' : 'px'; const multiplier = percent ? 100 : 1;
   for (const [property,key] of [['left','x'],['top','y'],['width','width'],['height','height']]) mark.style[property] = `${rectangle[key]*multiplier}${unit}`;
   mark.onclick = () => focusAnnotation(record.id, false, {mark}); return mark;
@@ -1017,14 +1115,15 @@ function renderAnnotationPopover() {
   if (!record || !popupsEnabled()) { closeAnnotationPopover(); return; }
   const previous = $('.popup-reply-form',box); const wasFocused = previous?.markdownEditor.view.hasFocus;
   const scroll = $('.popup-thread',box)?.scrollTop || 0;
-  const labels = {highlight:'Highlight',underline:'Underline',strike:'Strikethrough',comment:'Comment thread'};
+  const labels = {highlight:'Highlight',underline:'Underline',strike:'Strikethrough',comment:'Comment thread',pad:'Notepad link'};
   const matches = state.popupMatches.map(id => state.annotations.find(record => record.id === id)).filter(Boolean);
-  box.innerHTML = `<div class="passage-popover-heading"><span class="popup-label">${icon(record.comments.length ? 'comment' : 'highlighter')}${labels[record.kind]}${record.resolved ? ' · Resolved' : ''}</span><button class="icon-button popup-close" aria-label="Close passage popup">${icon('close')}</button></div>${matches.length > 1 ? `<div class="popup-matches"><span>${matches.length} marks at this passage</span><div>${matches.map((match,index) => `<button data-match="${match.id}" aria-pressed="${match.id === record.id}" title="${escapeHTML(match.quote)}">${index+1}. ${labels[match.kind]}</button>`).join('')}</div></div>` : ''}<blockquote class="popup-quote ${record.color}">${escapeHTML(record.quote)}</blockquote><div class="popup-thread">${record.comments.length ? record.comments.map(comment => commentMarkup(comment,true)).join('') : '<p class="popup-empty">A passage worth keeping. Add a thought or question here.</p>'}</div>${record.resolved ? '' : '<form class="popup-reply-form"></form>'}<div class="popup-actions"><button class="popup-resolve">${icon('check')}${record.resolved ? 'Reopen thread' : 'Resolve'}</button>${state.selection ? '<button class="popup-annotate">Annotate selection</button>' : ''}<button class="popup-panel" title="Focus this entry in Notes & discoveries">${icon('panel')}In panel</button></div>`;
+  box.innerHTML = `<div class="passage-popover-heading"><span class="popup-label">${icon(record.comments.length ? 'comment' : 'highlighter')}${labels[record.kind]}${record.resolved ? ' · Resolved' : ''}</span><button class="icon-button popup-close" aria-label="Close passage popup">${icon('close')}</button></div>${matches.length > 1 ? `<div class="popup-matches"><span>${matches.length} marks at this passage</span><div>${matches.map((match,index) => `<button data-match="${match.id}" aria-pressed="${match.id === record.id}" title="${escapeHTML(match.quote)}">${index+1}. ${labels[match.kind]}</button>`).join('')}</div></div>` : ''}<blockquote class="popup-quote ${record.color}">${escapeHTML(record.quote)}</blockquote><div class="popup-thread">${record.comments.length ? record.comments.map(comment => commentMarkup(comment,true)).join('') : '<p class="popup-empty">A passage worth keeping. Add a thought or question here.</p>'}</div>${record.resolved ? '' : '<form class="popup-reply-form"></form>'}<div class="popup-actions"><button class="popup-resolve">${icon('check')}${record.resolved ? 'Reopen thread' : 'Resolve'}</button>${state.selection ? '<button class="popup-annotate">Annotate selection</button><button class="popup-pad">Pad</button>' : ''}<button class="popup-panel" title="Focus this entry in Notes & discoveries">${icon('panel')}In panel</button></div>`;
   box.dataset.annotation = record.id;
   $('.popup-close',box).onclick = closeAnnotationPopover;
   $$('[data-match]',box).forEach(button => { button.onclick = () => focusAnnotation(button.dataset.match,false,{matches:state.popupMatches}); });
   $('.popup-panel',box).onclick = () => { closeAnnotationPopover(); $(`.annotation-card[data-annotation="${record.id}"]`)?.scrollIntoView({block:'nearest',behavior:'smooth'}); };
   $('.popup-annotate',box)?.addEventListener('click',() => { closeAnnotationPopover(); showSelectionToolbar(); });
+  $('.popup-pad',box)?.addEventListener('click',action(createPadLink));
   const placeholder = $('.popup-reply-form',box);
   if (placeholder) {
     const reuse = previous?.dataset.id === record.id;
@@ -1046,6 +1145,8 @@ function openPanel() {
   updatePaneWidth(); scheduleReaderLayout(true);
 }
 function focusAnnotation(id, scrollDocument = false, options = {}) {
+  const linked = state.annotations.find(record => record.id === id);
+  if (linked?.kind === 'pad' && !scrollDocument) { action(() => jumpToNotepad(id))(); return; }
   if (state.editing && scrollDocument) {
     action(async () => { if (await flushNote()) { setEditMode(false); renderTextMarks(); focusAnnotation(id,true,options); } })();
     return;
@@ -1056,7 +1157,7 @@ function focusAnnotation(id, scrollDocument = false, options = {}) {
   const mark = options.mark || passageMark(id, options.range);
   if (mark) rememberPopupTarget(mark);
   else state.popupTarget = {id, page:record.anchor.pages?.[0]?.page || null, segment:0};
-  state.selected = id; state.filter = record.resolved ? 'resolved' : 'all'; openPanel(); renderAnnotations(); renderMarks();
+  state.selected = id; if (!options.keepNotepad) state.filter = record.resolved ? 'resolved' : 'all'; openPanel(); renderAnnotations(); renderMarks();
   const card = $(`[data-annotation="${id}"]`,$('#annotations-list')); card?.scrollIntoView({block:'nearest',behavior:'smooth'});
   if (scrollDocument) {
     const first = $(`[data-annotation="${id}"]`,$('#reader'));
@@ -1064,7 +1165,7 @@ function focusAnnotation(id, scrollDocument = false, options = {}) {
     else if (record.anchor.pages?.length) goToPage(record.anchor.pages[0].page);
     else toast('The selected passage was edited or removed. The original quote is kept in this thread.');
   }
-  if (popupsEnabled()) { $('#annotation-popover').hidden = false; renderAnnotationPopover(); }
+  if (record.kind !== 'pad' && popupsEnabled()) { $('#annotation-popover').hidden = false; renderAnnotationPopover(); }
   else closeAnnotationPopover();
 }
 async function refreshAnnotations() {
@@ -1085,7 +1186,7 @@ function annotationClipboardText(record, item = state.active) {
     seen.add(folderId); const folder = state.folders.find(folder => folder.id === folderId); if (!folder) break;
     folderPath.unshift(singleLine(folder.name)); folderId = folder.parent_id;
   }
-  const labels = {highlight:'Highlight',underline:'Underline',strike:'Strikethrough',comment:'Commented highlight'};
+  const labels = {highlight:'Highlight',underline:'Underline',strike:'Strikethrough',comment:'Commented highlight',pad:'Notepad link'};
   const source = ['# Reading annotation','',`Document: ${singleLine(item.title)}`];
   if (item.filename) source.push(`Original file: ${singleLine(item.filename)}`);
   source.push(`Folder: ${folderPath.join(' / ') || 'Unfiled'}`);
@@ -1095,7 +1196,12 @@ function annotationClipboardText(record, item = state.active) {
   } else source.push(`Location: ${item.kind === 'note' ? 'Note text' : 'Document text'}`);
   source.push(`Annotation: ${labels[record.kind]}`,`Status: ${record.resolved ? 'Resolved' : 'Open'}`);
   if (record.orphaned) source.push('Source location: The original passage was edited or removed; the saved quotation is preserved.');
-  source.push('','## Highlighted source text','',quoteBlock(record.quote),'','## My comments, questions, and answers (chronological)');
+  source.push('','## Highlighted source text','',quoteBlock(record.quote));
+  if (record.kind === 'pad') {
+    const link = notepadEditor?.getPassageLinks().find(link => link.id === record.id);
+    source.push('','## Linked Notepad text','',link ? quoteBlock(link.text) : 'Open Notepad to view the associated text.');
+  }
+  source.push('','## My comments, questions, and answers (chronological)');
   if (!record.comments.length) source.push('','No comments or questions recorded.');
   let answers = 0; let replies = 0;
   record.comments.forEach((comment,index) => source.push('',comment.kind === 'answer' ? `### Answer ${++answers}` : index === 0 ? '### Initial comment or question' : `### Reply ${++replies}`,'',quoteBlock(comment.body)));
@@ -1120,7 +1226,9 @@ async function writeClipboard(text) {
 }
 async function copyAnnotation(record, button) {
   if (!state.active || record.item_id !== state.active.id) return;
-  const text = annotationClipboardText(record); button.disabled = true;
+  const item = state.active; button.disabled = true;
+  if (record.kind === 'pad' && !notepadEditor) await ensureNotepad().catch(() => {});
+  const text = annotationClipboardText(record,item);
   try {
     await writeClipboard(text);
     button.innerHTML = icon('check'); button.title = 'Copied passage and thread';
@@ -1137,6 +1245,7 @@ function renderAnnotations() {
   $$('[data-filter]').forEach(button => { const active = button.dataset.filter === state.filter; button.classList.toggle('active',active); button.setAttribute('aria-selected',active); });
   const list = $('#annotations-list');
   const pad = state.filter === 'notepad'; list.hidden = pad; $('#document-notepad').hidden = !pad;
+  $('#notepad-selection-toolbar').hidden = true;
   if (pad) { ensureNotepad(); return; }
   // Reuse live editors during sync so selection, undo, and drafts stay intact.
   const focusId = document.activeElement?.closest('.reply-form')?.dataset.id;
@@ -1149,12 +1258,23 @@ function renderAnnotations() {
   }
   for (const record of records) {
     const card = document.createElement('article'); card.className = `annotation-card${state.selected === record.id ? ' selected' : ''}${record.resolved ? ' resolved' : ''}`; card.dataset.annotation = record.id;
-    const labels = {highlight:'Highlight',underline:'Underlined',strike:'Strikethrough',comment:'A thought'};
+    const labels = {highlight:'Highlight',underline:'Underlined',strike:'Strikethrough',comment:'A thought',pad:'Notepad link'};
     const location = record.anchor.type === 'pdf' ? ` · p. ${record.anchor.pages.map(page => page.page).join(', ')}` : '';
     card.innerHTML = `<div class="annotation-card-header">${icon(record.comments.length ? 'comment' : 'highlighter')}<span class="annotation-label">${labels[record.kind]}${location}</span><span class="annotation-actions"><button class="icon-button annotation-copy" aria-label="Copy passage and thread for an LLM" title="Copy passage and thread for an LLM">${icon('copy')}</button><button class="icon-button annotation-menu" aria-label="Annotation options">${icon('more')}</button></span></div><button class="annotation-quote ${record.color}" title="Jump to selected passage"><span>${escapeHTML(record.quote.slice(0,350))}${record.quote.length > 350 ? '…' : ''}</span></button>${record.orphaned ? '<div class="orphan-warning">The passage was edited. Your original quote is preserved.</div>' : ''}`;
     $('.annotation-quote',card).onclick = () => focusAnnotation(record.id,true);
     $('.annotation-copy',card).onclick = () => copyAnnotation(record,$('.annotation-copy',card));
-    $('.annotation-menu',card).onclick = event => menu(event.currentTarget,[{label:'Jump to passage',icon:'book',run:() => focusAnnotation(record.id,true)},null,{label:'Delete annotation',icon:'trash',danger:true,run:() => modal('Delete this annotation?', '<p>The mark and all replies in this thread will be removed.</p>','Delete annotation',async () => { await api(`/api/annotations/${record.id}`,{method:'DELETE'}); await refreshAnnotations(); },{danger:true})}]);
+    const deleteEntry = {label:record.kind === 'pad' ? 'Remove Notepad link' : 'Delete annotation',icon:'trash',danger:true,run:() => modal(record.kind === 'pad' ? 'Remove this Notepad link?' : 'Delete this annotation?', record.kind === 'pad' ? '<p>The reading mark and link will be removed. Your Notepad text will be kept.</p>' : '<p>The mark and all replies in this thread will be removed.</p>','Delete annotation',async () => {
+      if (record.kind === 'pad' && !await flushNotepad()) return;
+      await api(`/api/annotations/${record.id}`,{method:'DELETE'});
+      if (record.kind === 'pad') await synchronizeNotepad();
+      await refreshAnnotations();
+    },{danger:true})};
+    $('.annotation-menu',card).onclick = event => menu(event.currentTarget,[{label:'Jump to passage',icon:'book',run:() => focusAnnotation(record.id,true)},...(record.kind === 'pad' ? [{label:'Open linked Notepad text',icon:'notepad',run:() => jumpToNotepad(record.id)}] : []),null,deleteEntry]);
+    if (record.kind === 'pad') {
+      const openPad = document.createElement('button'); openPad.className = 'pad-open button subtle'; openPad.innerHTML = `${icon('notepad')}Open linked Notepad text`;
+      openPad.onclick = action(() => jumpToNotepad(record.id)); card.append(openPad);
+      list.append(card); continue;
+    }
     for (const comment of record.comments) {
       card.insertAdjacentHTML('beforeend',commentMarkup(comment));
     }
@@ -1323,6 +1443,12 @@ $('#notepad-source').onclick = () => {
 };
 $('#notepad-save-state').onclick = action(async () => state.notepad?.conflict ? reviewNotepadConflict() : state.notepad ? saveNotepad() : ensureNotepad());
 $('#notepad-download').onclick = downloadNotepad;
+for (const id of ['notepad-link','link-pad-selection']) {
+  $(`#${id}`).onmousedown = event => event.preventDefault(); $(`#${id}`).onclick = action(beginPadLink);
+}
+$('#cancel-pad-link').onclick = cancelPadLink;
+$('#notepad-editor').addEventListener('focusout',schedulePadSelectionTools);
+$('#notepad-editor').addEventListener('scroll',schedulePadSelectionTools,true);
 $('#reader').addEventListener('pointerdown',() => $('#reader').classList.add('selecting'));
 $('#reader').addEventListener('pointerup',event => {
   $('#reader').classList.remove('selecting');
@@ -1348,13 +1474,14 @@ $('#reader').addEventListener('scroll',() => {
   },100);
 },{passive:true});
 document.addEventListener('pointerdown',event => {
+  if (!event.target.closest('#notepad-editor,#notepad-selection-toolbar,#notepad-link')) $('#notepad-selection-toolbar').hidden = true;
   if (!event.target.closest('#floating-menu,#selection-color,.annotation-menu,.folder-menu,#document-menu')) $('#floating-menu').hidden = true;
   if (!event.target.closest('#selection-toolbar,#comment-popover,#reader')) hideSelection();
   if (!event.target.closest('#sidebar,#sidebar-toggle,#sidebar-edge,#floating-menu,#modal')) closeNavigationDrawer();
   if (!event.target.closest('#annotation-popover,#reader,#toggle-popups,#theme-toggle,.annotation-quote')) closeAnnotationPopover();
 });
 document.addEventListener('keydown',event => {
-  if (event.key === 'Escape') { hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; closeNavigationDrawer(); finishPaneResize(); }
+  if (event.key === 'Escape') { cancelPadLink(); hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; closeNavigationDrawer(); finishPaneResize(); }
   if (!(event.metaKey || event.ctrlKey)) return;
   if (event.key.toLowerCase() === 'k') { event.preventDefault(); revealNavigation(); $('#search').focus(); }
   if (event.key.toLowerCase() === 's') { event.preventDefault(); saveNote(); saveNotepad(); }

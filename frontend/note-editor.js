@@ -1,9 +1,9 @@
 // This file is bundled into static/vendor/note-editor.js. No CDN or build step
 // is needed to run Notate; npm is only used when developing the editor.
-import {EditorState, EditorSelection, StateField, StateEffect, Transaction, Prec} from '@codemirror/state';
+import {EditorState, EditorSelection, StateField, StateEffect, Transaction, Prec, Facet, Compartment} from '@codemirror/state';
 import {EditorView, Decoration, WidgetType, keymap, drawSelection, dropCursor, placeholder} from '@codemirror/view';
 import {defaultKeymap, history, historyKeymap, indentWithTab, isolateHistory, insertNewline} from '@codemirror/commands';
-import {syntaxTree} from '@codemirror/language';
+import {syntaxTree, ensureSyntaxTree} from '@codemirror/language';
 import {markdown, insertNewlineContinueMarkup} from '@codemirror/lang-markdown';
 import {Table, Strikethrough} from '@lezer/markdown';
 import MarkdownIt from 'markdown-it';
@@ -13,6 +13,23 @@ const renderer = new MarkdownIt({html: false, breaks: true});
 // display image labels without fetching remote assets.
 renderer.renderer.rules.image = (tokens, index) => renderer.utils.escapeHtml(tokens[index].content);
 const changePreview = StateEffect.define();
+const passageLinkHandler = Facet.define({combine: values => values[0]});
+function passageLink(state, node) {
+  if (node.name !== 'Link') return null;
+  const match = /^\[([\s\S]*?)\]\(#notate-passage-([a-f0-9]{32})\)$/.exec(state.doc.sliceString(node.from,node.to));
+  return match ? {id: match[2], from: node.from, to: node.to, start: node.from + 1, end: node.from + 1 + match[1].length, text: match[1]} : null;
+}
+function passageLinks(state) {
+  const links = [];
+  const tree = ensureSyntaxTree(state,state.doc.length,100) || syntaxTree(state);
+  tree.iterate({enter(node) { const link = passageLink(state,node); if (link) links.push(link); }});
+  return links;
+}
+function activatePassageLink(view, event) {
+  const link = event.target.closest?.('[data-passage-link]'); const handler = view.state.facet(passageLinkHandler);
+  if (!link || !handler || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
+  event.preventDefault(); handler(link.dataset.passageLink); return true;
+}
 const previewEnabled = StateField.define({
   create: () => true,
   update: (value, transaction) => transaction.effects.find(effect => effect.is(changePreview))?.value ?? value
@@ -46,14 +63,25 @@ class TablePreview extends WidgetType {
     // markdown-it has HTML disabled and rejects unsafe link protocols.
     container.innerHTML = renderer.render(this.source);
     styleInlineAnswers(container);
+    container.querySelectorAll('a').forEach(link => {
+      const match = /^#notate-passage-([a-f0-9]{32})$/.exec(link.getAttribute('href'));
+      if (!match) return;
+      link.classList.add('md-pad-link'); link.dataset.passageLink = match[1];
+      link.title = 'Jump to reading passage · ⌘/Ctrl-click to edit';
+      link.addEventListener('click', event => { event.preventDefault(); });
+      link.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') activatePassageLink(view,event); });
+    });
     container.setAttribute('aria-label', 'Markdown table. Click a cell to edit.');
     container.querySelectorAll('th,td').forEach((cell, index) => {
       cell.title = 'Click to edit this cell’s Markdown';
       cell.addEventListener('pointerdown', event => {
+        if (activatePassageLink(view,event)) return;
         event.preventDefault();
         const target = this.cells[index];
-        const from = target?.from ?? this.from;
-        const to = target?.to ?? from;
+        const linked = event.target.closest('[data-passage-link]');
+        const passage = linked && passageLinks(view.state).find(link => link.id === linked.dataset.passageLink);
+        const from = passage?.start ?? target?.from ?? this.from;
+        const to = passage?.end ?? target?.to ?? from;
         if (target?.missing) {
           // Markdown permits short rows; materialize any omitted cells only
           // when the user clicks one of those cells to edit it.
@@ -69,13 +97,13 @@ class TablePreview extends WidgetType {
 }
 
 function liveDecorations(state) {
-  if (!state.field(previewEnabled)) return Decoration.none;
+  const preview = state.field(previewEnabled);
   const ranges = [], styledLines = new Set();
   const active = (from, to = from) => state.selection.ranges.some(range =>
     state.doc.lineAt(range.from).from <= to && state.doc.lineAt(range.to).to >= from);
   const hide = (from, to) => { if (to > from) ranges.push(Decoration.replace({}).range(from, to)); };
-  const mark = (from, to, className, tagName) => {
-    if (to > from) ranges.push(Decoration.mark({class: className, tagName}).range(from, to));
+  const mark = (from, to, className, tagName, attributes) => {
+    if (to > from) ranges.push(Decoration.mark({class: className, tagName, attributes}).range(from, to));
   };
   const lineStyle = (from, className) => {
     const line = state.doc.lineAt(from), key = `${line.number}:${className}`;
@@ -83,6 +111,12 @@ function liveDecorations(state) {
   };
   syntaxTree(state).iterate({enter(node) {
     const {name, from, to} = node;
+    const passage = passageLink(state,node);
+    if (passage) {
+      mark(passage.start,passage.end,'md-pad-link',null,{'data-passage-link':passage.id,role:'link',tabindex:'0',title:'Jump to reading passage · ⌘/Ctrl-click to edit'});
+      if (preview) { hide(from,passage.start); hide(passage.end,to); }
+    }
+    if (!preview) return;
     const answerLabel = isAnswerLabel(state,node), answerText = isAnswerText(state,node);
     if (name === 'Table' && active(from, to)) {
       for (let number = state.doc.lineAt(from).number; number <= state.doc.lineAt(to).number; number++) lineStyle(state.doc.line(number).from, 'md-table-source');
@@ -143,7 +177,7 @@ function liveDecorations(state) {
     else if (name === 'InlineCode') mark(from, to, 'md-inline-code', 'code');
     else if (name === 'EmphasisMark' || name === 'StrikethroughMark' || name === 'CodeMark') hide(from, to);
     else if (name === 'Escape') hide(from, from + 1);
-    else if (name === 'Link') {
+    else if (name === 'Link' && !passage) {
       const match = /^\[([\s\S]*?)\]\([\s\S]*\)$/.exec(state.doc.sliceString(from, to));
       if (match) { hide(from, from + 1); mark(from + 1, from + 1 + match[1].length, 'md-link'); hide(from + 1 + match[1].length, to); }
     }
@@ -160,14 +194,21 @@ const livePreview = StateField.define({
 
 export function createNoteEditor(parent, source, onChange, preview = true, options = {}) {
   let suppressChange = false;
+  const editing = new Compartment();
   parent.classList.add('markdown-editor');
   const view = new EditorView({parent, state: EditorState.create({doc: source, extensions: [
     markdown({extensions: [Table, Strikethrough], completeHTMLTags: false}),
     history(), drawSelection(), dropCursor(), EditorView.lineWrapping,
+    editing.of([EditorState.readOnly.of(false), EditorView.editable.of(true)]),
     EditorView.contentAttributes.of({'aria-label': options.ariaLabel || 'Note Markdown editor', spellcheck: 'true', autocapitalize: 'sentences'}),
     placeholder(options.placeholder || 'Start writing… Use # for a heading, **bold**, or the table button above.'),
     EditorState.transactionFilter.of(transaction => transaction.docChanged && transaction.newDoc.length > (options.maxLength || 5_000_000) ? [] : transaction),
     previewEnabled, livePreview,
+    passageLinkHandler.of(options.onPassageLink),
+    EditorView.domEventHandlers({
+      pointerdown: (event, editor) => event.button === 0 && activatePassageLink(editor,event),
+      keydown: (event, editor) => (event.key === 'Enter' || event.key === ' ') && activatePassageLink(editor,event)
+    }),
     Prec.high(keymap.of([
       {key: 'Mod-b', run: () => { format('bold'); return true; }},
       {key: 'Mod-i', run: () => { format('italic'); return true; }},
@@ -176,7 +217,10 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
       ...(options.onSubmit ? [{key:'Mod-Enter', run: () => { options.onSubmit(); return true; }}] : [])
     ])),
     keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
-    EditorView.updateListener.of(update => { if (update.docChanged && !suppressChange) onChange(update.state.doc.toString()); })
+    EditorView.updateListener.of(update => {
+      if (update.docChanged && !suppressChange) onChange(update.state.doc.toString());
+      if (update.selectionSet || update.docChanged || update.geometryChanged || update.focusChanged) options.onSelectionChange?.(update.state.selection.main, update);
+    })
   ]})});
   if (!preview) view.dispatch({effects: changePreview.of(false)});
   function wrap(marker) {
@@ -193,6 +237,7 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     view.focus();
   }
   function format(kind) {
+    if (view.state.readOnly) return;
     if (kind === 'bold' || kind === 'italic') return wrap(kind === 'bold' ? '**' : '*');
     const {from, to} = view.state.selection.main;
     const first = view.state.doc.lineAt(from), last = view.state.doc.lineAt(to);
@@ -206,6 +251,7 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     view.dispatch({changes: {from: first.from, to: last.to, insert}, selection: {anchor: first.from + insert.length}, userEvent: 'input', annotations:isolateHistory.of('full')}); view.focus();
   }
   function insertAnswer() {
+    if (view.state.readOnly) return;
     const {from, to} = view.state.selection.main;
     const selected = view.state.doc.sliceString(from,to), text = selected || ' ';
     const prefix = '**Answ:** *';
@@ -228,7 +274,23 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
   }
   return {
     view, format, insertAnswer,
+    setReadOnly: value => view.dispatch({effects: editing.reconfigure([EditorState.readOnly.of(value), EditorView.editable.of(!value)])}),
     getSource: () => view.state.doc.toString(),
+    getPassageLinks: () => passageLinks(view.state),
+    revealPassageLink(id) {
+      const link = passageLinks(view.state).find(link => link.id === id); if (!link) return false;
+      view.dispatch({selection: EditorSelection.single(link.start,link.end), effects: EditorView.scrollIntoView(link.start,{y:'center'}), annotations: Transaction.addToHistory.of(false)});
+      view.focus(); return true;
+    },
+    selectionCanLink() {
+      const {from,to,empty} = view.state.selection.main;
+      if (empty || !view.state.doc.sliceString(from,to).trim() || /\n\s*\n/.test(view.state.doc.sliceString(from,to))) return false;
+      let allowed = true;
+      syntaxTree(view.state).iterate({from,to,enter(node) {
+        if (['Link','Image','InlineCode','FencedCode','CodeBlock'].includes(node.name) && node.from < to && node.to > from) allowed = false;
+      }});
+      return allowed;
+    },
     setSource(value) {
       if (value === view.state.doc.toString()) return;
       suppressChange = true;
@@ -238,6 +300,7 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     },
     setPreview: enabled => view.dispatch({effects: changePreview.of(enabled)}),
     insertTable(rows, columns) {
+      if (view.state.readOnly) return;
       const {from, to} = view.state.selection.main;
       const row = cells => `| ${cells.join(' | ')} |`;
       const table = [row(Array.from({length: columns}, (_, index) => `Column ${index + 1}`)),
