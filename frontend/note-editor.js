@@ -237,17 +237,19 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
       pointerdown: (event, editor) => event.button === 0 && activatePassageLink(editor,event),
       keydown: (event, editor) => (event.key === 'Enter' || event.key === ' ') && activatePassageLink(editor,event)
     }),
-    // Some platforms report Shift+E as lowercase e, and synthetic native
-    // events may omit keyCode. Handle Shift explicitly before letter fallback.
+    // Some platforms report shifted letters in lowercase, and synthetic
+    // native events may omit keyCode. Handle Shift before letter fallback.
     Prec.high(EditorView.domEventHandlers({keydown: event => {
-      if (event.altKey || !(event.metaKey || event.ctrlKey) || !event.shiftKey || event.key.toLowerCase() !== 'e') return false;
-      event.preventDefault(); insertTemplate('example'); return true;
+      if (event.altKey || !(event.metaKey || event.ctrlKey) || !event.shiftKey) return false;
+      const kind = {e:'example',m:'question'}[event.key.toLowerCase()];
+      if (!kind) return false;
+      event.preventDefault(); insertTemplate(kind); return true;
     }})),
     Prec.high(keymap.of([
       {key: 'Mod-b', run: () => { format('bold'); return true; }},
       {key: 'Mod-i', run: () => { format('italic'); return true; }},
       {key: 'Mod-e', run: () => { insertAnswer(); return true; }},
-      {key: 'Mod-m', run: () => { insertTemplate('question'); return true; }},
+      {key: 'Mod-Shift-m', run: () => { insertTemplate('question'); return true; }},
       {key: 'Mod-Shift-e', run: () => { insertTemplate('example'); return true; }},
       {key: 'Enter', run: finishTemplateLine},
       ...(options.onSubmit ? [{key:'Mod-Enter', run: () => { options.onSubmit(); return true; }}] : [])

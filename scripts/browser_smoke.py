@@ -238,10 +238,12 @@ def check_pad_passage_links(page, context, url):
     page.locator('#notepad-source').click(); assert '#notate-passage-' not in editor.inner_text()
     if page.locator('html').get_attribute('data-theme') != 'light': page.locator('#theme-toggle').click()
     assert word_link.evaluate('node => getComputedStyle(node).textDecorationLine') == 'underline'
-    assert word_link.evaluate('node => getComputedStyle(node).color') == 'rgb(154, 75, 10)'
+    assert word_link.evaluate('node => getComputedStyle(node).color') == 'rgb(0, 122, 120)'
+    assert mark.evaluate('node => getComputedStyle(node).borderBottomColor') == 'rgb(0, 122, 120)'
     page.screenshot(path=str(ARTIFACTS/'pad-links-light.png'),full_page=True)
     page.locator('#theme-toggle').click()
-    assert word_link.evaluate('node => getComputedStyle(node).color') == 'rgb(255, 193, 124)'
+    assert word_link.evaluate('node => getComputedStyle(node).color') == 'rgb(112, 225, 215)'
+    assert mark.evaluate('node => getComputedStyle(node).borderBottomColor') == 'rgb(112, 225, 215)'
     page.screenshot(path=str(ARTIFACTS/'pad-links-dark.png'),full_page=True)
 
     second = context.new_page(); second.goto(url)
@@ -500,7 +502,7 @@ def check_inline_answer_shortcut(page, url, modifier):
 
 
 def exercise_question_example(editor, modifier):
-    editor.fill('Selected words'); editor.press(modifier+'+a'); editor.press(modifier+'+m')
+    editor.fill('Selected words'); editor.press(modifier+'+a'); editor.press(modifier+'+Shift+m')
     expect(editor).to_contain_text('**Question:** *Selected words*')
     editor.press('Enter')
     expect(editor.locator('.md-question-label')).to_have_text('Question:')
@@ -513,7 +515,7 @@ def exercise_question_example(editor, modifier):
     expect(editor.locator('.md-example-label')).to_have_text('For Example:')
     expect(editor.locator('.md-example-text')).to_contain_text('A practical example.')
     expect(editor.locator('.md-bullet')).to_have_text('◦')
-    editor.fill(''); editor.press(modifier+'+m')
+    editor.fill(''); editor.press(modifier+'+Shift+m')
     expect(editor).to_contain_text('**Question:** * *')
     editor.page.keyboard.insert_text('Why does this work?'); editor.press('Enter')
     editor.press(modifier+'+Shift+e')
@@ -543,6 +545,8 @@ def check_question_example_shortcuts(page, url, modifier):
     title = modifier+' question and example checks'
     page.locator('#new-note').click(); page.locator('#note-title').fill(title); page.locator('#modal-submit').click()
     editor = page.locator('#note-editor .cm-content')
+    editor.press(modifier+'+m'); expect(editor).not_to_contain_text('Question:')
+    if modifier == 'Control': editor.press(modifier+'+m')  # Restore CodeMirror's default Tab-focus mode.
     source = exercise_question_example(editor,modifier); assert_question_example(editor)
     expect(page.locator('#save-state')).to_have_text('Saved locally')
     note_id = page.locator('.file-card.active').get_attribute('data-id')
@@ -570,7 +574,7 @@ def check_question_example_shortcuts(page, url, modifier):
     page.locator('[data-filter="notepad"]').click(); page.locator('#notepad-editor .cm-content').press('ArrowDown')
     assert_question_example(page.locator('#notepad-editor'),dark=True)
     page.locator('.file-card').filter(has_text='Welcome to Notate').click()
-    print(f'{modifier} M questions and Shift E examples work in every editor, with gold text, literal tabs, nesting shapes, undo/redo, persistence, and light/dark themes.',flush=True)
+    print(f'{modifier} Shift M questions and Shift E examples work in every editor, with gold text, literal tabs, nesting shapes, undo/redo, persistence, and light/dark themes.',flush=True)
 
 
 def check_comments_notepad_and_shortcuts(page, url, modifier, label):

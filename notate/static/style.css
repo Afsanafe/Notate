@@ -283,13 +283,12 @@ body.resizing-panels, body.resizing-panels * { cursor: col-resize !important; us
 }
 
 /* Bidirectional reading-passage links in the document Notepad. */
-:root { --pad-link-ink: #9a4b0a; --pad-link-bg: #f5a84f35; }
-:root[data-theme="dark"] { --pad-link-ink: #ffc17c; --pad-link-bg: #ef983e30; }
+:root { --pad-link-ink: #007a78; --pad-link-bg: #40e0d02e; --pad-mark-bg: #40e0d04d; }
+:root[data-theme="dark"] { --pad-link-ink: #70e1d7; --pad-link-bg: #40e0d026; --pad-mark-bg: #40e0d03d; }
 .markdown-editor .md-pad-link { color: var(--pad-link-ink); background: var(--pad-link-bg); text-decoration: underline; text-decoration-color: var(--pad-link-ink); text-underline-offset: 3px; border-radius: 2px; cursor: pointer; }
 .md-pad-link:focus-visible { outline: 2px solid var(--pad-link-ink); outline-offset: 2px; }
-.annotation-mark.pad { background: #f5a84f55; border-bottom: 2px solid #c66e20; border-radius: 0; }
-:root[data-theme="dark"] .annotation-mark.pad { background: #ed963e4a; border-bottom-color: #ffbd77; }
-.annotation-card .annotation-quote.orange span { background: var(--pad-link-bg); color: var(--pad-link-ink); box-shadow: 3px 0 var(--pad-link-bg), -3px 0 var(--pad-link-bg); text-decoration: underline; }
+.annotation-mark.pad { background: var(--pad-mark-bg); border-bottom: 2px solid var(--pad-link-ink); border-radius: 0; }
+.annotation-card[data-kind="pad"] .annotation-quote span { background: var(--pad-link-bg); color: var(--pad-link-ink); box-shadow: 3px 0 var(--pad-link-bg), -3px 0 var(--pad-link-bg); text-decoration: underline; }
 .pad-open { width: 100%; justify-content: center; font-size: 10px; }
 .pad-link-banner { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--pad-link-bg); font-size: 11px; line-height: 1.5; }
 .pad-link-banner > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }

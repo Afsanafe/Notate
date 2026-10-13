@@ -218,7 +218,7 @@ def run():
                 wait_for("document.querySelector('#document-title').textContent === 'Native question and example'")
                 window.evaluate_js("document.querySelector('#edit-mode').click()")
                 wait_for("!!document.querySelector('#note-editor .cm-content')")
-                window.evaluate_js("document.querySelector('#note-editor .cm-content').focus(); document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'m',code:'KeyM',metaKey:true,bubbles:true,cancelable:true})); document.execCommand('insertText',false,'Why does this work?')")
+                window.evaluate_js("document.querySelector('#note-editor .cm-content').focus(); document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'M',code:'KeyM',metaKey:true,shiftKey:true,bubbles:true,cancelable:true})); document.execCommand('insertText',false,'Why does this work?')")
                 wait_for("document.querySelector('#note-editor .md-question-text')?.textContent.includes('Why does this work?')")
                 window.evaluate_js("document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,cancelable:true})); document.querySelector('#note-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'E',code:'KeyE',metaKey:true,shiftKey:true,bubbles:true,cancelable:true})); document.execCommand('insertText',false,'A practical example.')")
                 wait_for("document.querySelector('#note-editor .md-example-text')?.textContent.includes('A practical example.')")
