@@ -252,10 +252,42 @@ def run():
                 window.evaluate_js("document.querySelector('#theme-toggle').click()")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-editor .md-text-purple')).color") == 'rgb(123, 61, 170)'
                 results['notepad_text_formatting'] = 'passed'
+                wait_for("!document.querySelector('#notepad-add-page').disabled")
+                window.evaluate_js("document.querySelector('#notepad-add-page').click()")
+                wait_for("document.querySelector('#notepad-page-label').textContent === 'Page 2 of 2' && !document.querySelector('#notepad-add-page').disabled")
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').focus(); document.execCommand('insertText',false,'Native second page.')")
+                wait_for("document.querySelector('#notepad-editor .cm-content').textContent === 'Native second page.' && document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
+                window.evaluate_js("document.querySelector('#notepad-previous-page').click()")
+                wait_for("document.querySelector('#notepad-page-label').textContent === 'Page 1 of 2' && document.querySelector('#notepad-editor .md-text-purple')?.textContent === 'Native colored thought.'")
+                assert httpx.get(url+f'/api/items/{template_id}/notepad').json()['markdown'] == '<u><span class="md-text-purple">Native colored thought.</span></u>'
+                assert httpx.get(url+f'/api/items/{template_id}/notepad?page=2').json()['markdown'] == 'Native second page.'
+                wait_for("!document.querySelector('#notepad-next-page').disabled")
+                window.evaluate_js("document.querySelector('#notepad-next-page').click()")
+                wait_for("document.querySelector('#notepad-page-label').textContent === 'Page 2 of 2' && document.querySelector('#notepad-editor .cm-content').textContent === 'Native second page.'")
+                results['notepad_pages'] = 'passed'
+                assert window.evaluate_js("document.querySelector('.notepad-page-nav').getBoundingClientRect().height") <= 28
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').focus(); getSelection().selectAllChildren(document.querySelector('#notepad-editor .cm-line'))")
+                wait_for("!document.querySelector('#notepad-selection-toolbar').hidden && !document.querySelector('#notepad-define').disabled")
+                window.evaluate_js("document.querySelector('#notepad-define').click()")
+                wait_for("!document.querySelector('#notepad-definition-popover').hidden && !!document.querySelector('#notepad-definition-editor .cm-content')")
+                window.evaluate_js("document.querySelector('#notepad-definition-editor .cm-content').focus(); document.execCommand('insertText',false,'A native **definition**.')")
+                wait_for("document.querySelector('#notepad-definition-editor .cm-content').textContent.includes('A native')")
+                window.evaluate_js("document.querySelector('#notepad-definition-save').click()")
+                wait_for("document.querySelector('#notepad-definition-popover').hidden && document.querySelector('#notepad-editor .md-definition')?.textContent === 'Native second page.'")
+                window.evaluate_js("document.querySelector('#notepad-editor .md-definition').dispatchEvent(new PointerEvent('pointerdown',{button:0,metaKey:true,bubbles:true,cancelable:true}))")
+                wait_for("!document.querySelector('#notepad-definition-popover').hidden && document.querySelector('#notepad-definition-display strong')?.textContent === 'definition'")
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-definition-popover')).backgroundColor") == 'rgb(32, 42, 36)'
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-editor .md-definition')).fontWeight") == '700'
+                window.evaluate_js("document.querySelector('#notepad-definition-close').click()")
+                window.evaluate_js("document.querySelector('#notepad-editor .md-definition').dispatchEvent(new PointerEvent('pointerdown',{button:0,ctrlKey:true,bubbles:true,cancelable:true}))")
+                wait_for("!document.querySelector('#notepad-definition-popover').hidden && document.querySelector('#notepad-definition-display strong')?.textContent === 'definition'")
+                wait_for("document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
+                assert 'data-definition="A%20native%20**definition**."' in httpx.get(url+f'/api/items/{template_id}/notepad?page=2').json()['markdown']
+                results['notepad_definitions'] = 'passed'
                 results.update(status='passed',native_engine='macOS WKWebView',pdf_text_selection=True,comment_saved_in_shared_backend=True,
                                dark_mode=True,contained_selection=True,passage_popup_reply=True,popup_toggle=True,copy_markdown=True,markdown_preview=True,answer_types=True,
                                note_markdown_live_preview=True,note_tables=True,comment_live_editing=True,command_shortcuts=True,document_notepad=True,inline_answer_shortcut=True)
-                print('Native Markdown editors, shortcuts, Notepad colors/underline, tables, annotations, and blue answers passed.',flush=True)
+                print('Native Markdown editors, shortcuts, compact Notepad pages, definitions, colors/underline, tables, annotations, and blue answers passed.',flush=True)
             except BaseException as error:
                 results.update(status='failed',error=str(error))
                 print(f'Desktop verification failed: {error}',flush=True)

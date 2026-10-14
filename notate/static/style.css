@@ -216,6 +216,13 @@
 .notepad-heading strong { font-size: 10px; }
 .notepad-heading .save-state { font-size: 8px; text-align: right; padding: 3px 0; }
 .notepad-context { margin: 0; color: var(--muted); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notepad-page-nav { display: flex; justify-content: center; align-items: center; gap: 6px; padding: 0; }
+.notepad-page-nav .icon-button { width: 22px; height: 22px; padding: 3px; border-radius: 4px; }
+.notepad-page-nav svg { width: 12px; height: 12px; }
+.notepad-page-nav #notepad-add-page { background: var(--green-light); color: var(--green); border: 1px solid var(--line); }
+.notepad-page-nav button:disabled { opacity: .35; cursor: default; }
+.notepad-page-label { min-width: 56px; text-align: center; color: var(--muted); font-size: 9px; line-height: 1.5; white-space: nowrap; }
+@media (pointer: coarse) { .notepad-page-nav .icon-button { width: 28px; height: 28px; } }
 .notepad-toolbar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 5px; border: 1px solid var(--line); border-radius: 4px; }
 .notepad-toolbar button { width: 24px; height: 24px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 10px; }
 .notepad-toolbar svg { width: 13px; height: 13px; }
@@ -257,7 +264,8 @@
 .markdown-editor .md-underline { text-decoration: underline; text-underline-offset: 3px; }
 .notepad-selection-toolbar { flex-direction: column; align-items: stretch; width: 272px; max-width: calc(100vw - 16px); padding: 8px; gap: 7px; }
 .notepad-selection-actions { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
-.notepad-selection-actions button { padding: 5px 6px; gap: 5px; font-size: 10px; }
+.notepad-selection-actions button { padding: 5px 4px; gap: 4px; font-size: 10px; }
+.notepad-selection-actions svg { width: 13px; height: 13px; }
 .notepad-selection-actions button:disabled { opacity: .4; cursor: default; }
 .notepad-selection-actions button[aria-pressed="true"] { background: var(--green-light); }
 .text-color-letter { font-weight: 600; padding: 0 2px; border-bottom: 3px solid var(--notepad-current-color); line-height: 1.3; }
@@ -266,6 +274,35 @@
 .notepad-color-palette button span { display: block; width: 16px; height: 16px; border-radius: 50%; }
 .notepad-color-palette button[aria-pressed="true"] { border-color: var(--green); background: var(--green-light); }
 .notepad-color-hint { font-size: 9px; color: var(--muted); padding: 0 3px; }
+
+/* Definitions stay with the word; their compact popup is dark in both themes. */
+.md-definition { font-weight: 700; background: #30463d24; border-radius: 3px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.md-definition[data-definition-from] { cursor: help; }
+:root[data-theme="dark"] .md-definition { background: #0d1711; box-shadow: inset 0 -1px #526654; }
+.notepad-definition-popover {
+  --ink: #e9eee9; --muted: #a3b2a8; --green: #b3d7c0; --green-light: #344c3f;
+  --white: #202a24; --line: #425348; --raised: #2d3c32; --accent: #acd9c2; --soft-ink: #b3c3b8;
+  --inline-answer-color: #9fc9f3; --inline-question-color: #f1cd67;
+  --text-color-red: #ff8e98; --text-color-orange: #ffb16b; --text-color-yellow: #f1d36b;
+  --text-color-light-green: #b0db79; --text-color-dark-green: #69bc94;
+  --text-color-light-blue: #8cd8f2; --text-color-dark-blue: #91aef9; --text-color-purple: #d3a2ef;
+  position: fixed; z-index: 45; width: 310px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px);
+  overflow: auto; color-scheme: dark; color: var(--ink); background: #202a24; border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 28px #0005; font-size: 12px; line-height: 1.6;
+}
+.definition-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.definition-heading strong { font-size: 11px; }
+.notepad-definition-popover .icon-button { width: 24px; height: 24px; color: var(--muted); }
+.notepad-definition-popover .icon-button svg { width: 13px; height: 13px; }
+.definition-term { margin: 0 0 9px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-weight: 700; overflow-wrap: anywhere; max-height: 70px; overflow: auto; }
+#notepad-definition-display { max-height: 220px; overflow: auto; overflow-wrap: anywhere; }
+#notepad-definition-editor { border: 1px solid var(--line); border-radius: 4px; }
+.definition-actions { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
+.definition-actions span { color: var(--muted); font-size: 9px; margin-right: auto; }
+.definition-actions button { padding: 4px 7px; border: 1px solid var(--line); border-radius: 4px; font-size: 10px; }
+.definition-actions button:hover, .notepad-definition-popover .icon-button:hover { background: #ffffff12; }
+.definition-actions .definition-save { background: #3c6250; border-color: #608570; color: #f5fff8; }
+.definition-error { margin: 8px 0 0; color: #ffb0b8; font-size: 11px; }
 
 /* Inline answer shortcut: bold label, italic body text, theme-aware blue. */
 :root { --inline-answer-color: #234f87; }

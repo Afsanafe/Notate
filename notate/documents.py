@@ -9,6 +9,7 @@ import tempfile
 import zipfile
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import unquote
 
 import bleach
 import markdown
@@ -34,9 +35,14 @@ TEXT_COLORS = {'red','orange','yellow','light-green','dark-green','light-blue','
 def note_attribute(tag, name, value):
     if tag == 'a' and name in {'href', 'title'}:
         return True
+    if tag == 'span' and name == 'data-definition':
+        if len(value) > 240_000 or not re.fullmatch(r"(?:[a-zA-Z0-9_.!~*'()-]|%[a-fA-F0-9]{2})*",value): return False
+        try: decoded = unquote(value,errors='strict')
+        except UnicodeDecodeError: return False
+        return bool(decoded.strip()) and len(decoded) <= 20_000
     return name == 'class' and ((tag == 'strong' and value in {'md-answer-label','md-question-label','md-example-label'})
         or (tag == 'em' and value in {'md-answer-text','md-question-text','md-example-text'})
-        or (tag == 'span' and value in {f'md-text-{color}' for color in TEXT_COLORS})
+        or (tag == 'span' and value in {'md-definition',*(f'md-text-{color}' for color in TEXT_COLORS)})
         or (tag == 'ul' and value in {'md-list-disc','md-list-circle','md-list-square',
                                      'md-list-disc md-example-list', 'md-list-circle md-example-list',
                                      'md-list-square md-example-list'}))
@@ -123,6 +129,8 @@ def render_note_markdown(value):
 
 class NoteMarkdownConverter(MarkdownConverter):
     def convert_span(self, el, text, parent_tags):
+        if 'md-definition' in el.get('class',[]) and el.get('data-definition'):
+            return f'<span class="md-definition" data-definition="{html.escape(el["data-definition"],quote=False)}">{text}</span>'
         color = next((name for name in el.get('class',[]) if name in {f'md-text-{color}' for color in TEXT_COLORS}),None)
         return f'<span class="{color}">{text}</span>' if color else text
 

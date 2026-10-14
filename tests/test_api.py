@@ -3,6 +3,7 @@ import json
 import sqlite3
 import threading
 import zipfile
+from urllib.parse import quote
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -173,6 +174,30 @@ def test_notepad_text_colors_round_trip_safely_with_markdown(client, app):
     assert '<span class=' not in literal and '&lt;span' in literal
 
 
+def test_notepad_definitions_persist_and_round_trip_safe_markdown(client, app):
+    definition = "A **reader's** definition: café, \"quotes\", and findings.\n\n<script>alert(1)</script>"
+    encoded = quote(definition,safe="~!*'()-._")
+    source = f'<span class="md-definition" data-definition="{encoded}">**Evidence**</span>'
+    note = new_note(client)
+    path = f'/api/items/{note["id"]}/notepad'
+    saved = client.patch(path,json={'revision':0,'markdown':source}).json()
+    with TestClient(create_app(app.state.store.directory)) as restarted:
+        assert restarted.get(path).json() == saved
+        assert restarted.get(f'/api/items/{note["id"]}/export').json()['notepad']['markdown'] == source
+    rendered = client.post('/api/markdown/preview',json={'body':source}).json()['html']
+    assert 'class="md-definition"' in rendered and '<strong>Evidence</strong>' in rendered and '<script>' not in rendered
+    converted = client.post('/api/notes/convert',json={'content':rendered}).json()['markdown']
+    assert converted == source
+    literal = client.post('/api/markdown/preview',json={'body':'`'+source+'`'}).json()['html']
+    assert '<span class=' not in literal
+    for invalid in ('%FF','%GG','%20','x'*20001):
+        rendered = client.post('/api/markdown/preview',json={'body':f'<span class="md-definition" data-definition="{invalid}" onclick="alert(1)">Term</span>'})
+        if rendered.status_code == 200:
+            assert 'data-definition' not in rendered.json()['html'] and 'onclick' not in rendered.json()['html']
+    unsafe = client.post('/api/notes/convert',json={'content':'<span class="md-definition" data-definition="x&quot; onmouseover=&quot;alert(1)">Term</span>'}).json()['markdown']
+    assert 'data-definition' not in unsafe and 'onmouseover' not in unsafe
+
+
 @pytest.mark.parametrize('document_kind', ['note', 'pdf'])
 def test_document_notepad_is_independent_persistent_and_synced(client, app, pdf_bytes, document_kind):
     document = new_note(client) if document_kind == 'note' else client.post('/api/import',files={'file':('reading.pdf',pdf_bytes,'application/pdf')}).json()
@@ -227,6 +252,82 @@ def test_two_initial_notepad_saves_cannot_overwrite_one_another(client):
     assert sorted(response.status_code for response in responses) == [200,409]
     winning = next(response.json() for response in responses if response.status_code == 200)
     assert client.get(path).json() == winning
+
+
+def test_notepad_pages_preserve_legacy_content_export_backup_and_cascade(client, app, tmp_path):
+    note = new_note(client); item_id = note['id']; path = f'/api/items/{item_id}/notepad'
+    source = '# Existing findings\n\n<u><span class="md-text-purple">A discovery.</span></u>'
+    first = client.patch(path,json={'revision':0,'markdown':source}).json()
+    with app.state.store.connect() as db: db.execute('DROP TABLE notepad_pages')
+    with TestClient(create_app(app.state.store.directory)) as upgraded:
+        assert upgraded.get(path).json() == first
+        assert upgraded.get(path+'/pages').json()['pages'] == [{'page':1,'revision':1,'updated_at':first['updated_at']}]
+        second = upgraded.post(path+'/pages').json()
+        assert second['page'] == 2 and second['notepad']['markdown'] == ''
+        saved = upgraded.patch(path+'?page=2',json={'revision':1,'markdown':'**Second** findings.'}).json()
+        assert saved['revision'] == 2 and upgraded.get(path).json() == first
+        assert upgraded.post(path+'/pages').json()['page'] == 3
+        exported = upgraded.get(f'/api/items/{item_id}/export').json()
+        assert exported['notepad'] == first
+        assert [page['page'] for page in exported['notepad_pages']] == [1,2,3]
+        assert [page['markdown'] for page in exported['notepad_pages']] == [source,'**Second** findings.','']
+        backup = upgraded.get('/api/backup')
+        with zipfile.ZipFile(io.BytesIO(backup.content)) as archive: archive.extractall(tmp_path/'restored-pages')
+    with TestClient(create_app(tmp_path/'restored-pages')) as restored:
+        assert restored.get(path+'?page=2').json() == saved
+        assert restored.get(f'/api/items/{item_id}/export').json()['notepad_pages'] == exported['notepad_pages']
+        assert restored.delete(f'/api/items/{item_id}').status_code == 200
+    from notate.storage import Store
+    with Store(tmp_path/'restored-pages').connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM notepad_pages WHERE item_id=?',(item_id,)).fetchone()[0] == 0
+
+
+def test_notepad_pages_allocate_concurrently_and_have_independent_revision_checks(client):
+    from concurrent.futures import ThreadPoolExecutor
+    note = new_note(client); path = f'/api/items/{note["id"]}/notepad'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: client.post(path+'/pages'),range(2)))
+    assert all(response.status_code == 201 for response in responses)
+    assert sorted(response.json()['page'] for response in responses) == [2,3]
+    with client.websocket_connect('/api/events') as socket:
+        socket.receive_json()
+        assert client.patch(path,json={'revision':0,'markdown':'First page.'}).status_code == 200
+        assert client.patch(path+'?page=2',json={'revision':1,'markdown':'Second page.'}).status_code == 200
+        assert [socket.receive_json()['scope'] for _ in range(2)] == ['notepad','notepad']
+    assert client.patch(path+'?page=2',json={'revision':1,'markdown':'Stale second page.'}).status_code == 409
+    assert client.patch(path,json={'revision':1,'markdown':'New first page.'}).status_code == 200
+    assert client.get(path+'?page=2').json()['markdown'] == 'Second page.'
+    assert client.get(path+'?page=0').status_code == 422
+    assert client.get(path+'?page=4').status_code == 404
+    assert client.patch(path+'?page=4',json={'revision':0,'markdown':'Missing page.'}).status_code == 404
+    assert client.post('/api/items/missing/notepad/pages').status_code == 404
+
+
+def test_pad_links_follow_their_notepad_page_and_unlink_across_pages(client):
+    note = new_note(client); item_id = note['id']; path = f'/api/items/{item_id}/notepad'
+    client.patch(path,json={'revision':0,'markdown':'Keep the first page.'})
+    client.post(path+'/pages'); client.post(path+'/pages')
+    source = 'Hypothesis needs evidence.'
+    client.patch(path+'?page=2',json={'revision':1,'markdown':source})
+    body = {'quote':'A good question','anchor':{'type':'text','start':0,'end':15},'revision':2,'page':2,
+            'selection':{'start':0,'end':10,'text':'Hypothesis'}}
+    linked = client.post(f'/api/items/{item_id}/pad-links',json=body)
+    assert linked.status_code == 201
+    result = linked.json(); annotation_id = result['annotation']['id']; lookup = path+f'/links/{annotation_id}'
+    assert client.get(lookup).json() == {'page':2,'notepad':result['notepad']}
+    assert client.get(path).json()['markdown'] == 'Keep the first page.'
+    client.patch(path+'?page=3',json={'revision':1,'markdown':result['notepad']['markdown']})
+    client.patch(path+'?page=2',json={'revision':3,'markdown':source})
+    assert client.get(lookup).json()['page'] == 3
+    client.patch(path+'?page=2',json={'revision':4,'markdown':result['notepad']['markdown']})
+    with client.websocket_connect('/api/events') as socket:
+        socket.receive_json()
+        assert client.delete(f'/api/annotations/{annotation_id}').status_code == 200
+        assert [socket.receive_json()['scope'] for _ in range(2)] == ['notepad','annotations']
+    assert client.get(path+'?page=2').json()['markdown'] == source
+    assert client.get(path+'?page=3').json()['markdown'] == source
+    assert client.get(lookup).status_code == 404
+    assert client.get(path).json()['markdown'] == 'Keep the first page.'
 
 
 @pytest.mark.parametrize('document_kind', ['note', 'text', 'pdf'])

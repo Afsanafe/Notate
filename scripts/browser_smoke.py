@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import quote
 from pathlib import Path
 
 import httpx
@@ -746,6 +747,196 @@ def check_notepad_text_formatting(page, context, url, modifier):
     print(f'{modifier} Shift H, eight readable text colors, underline, selection popups, tables, undo/redo, saved Markdown, reload, sync, download, and passage links passed.',flush=True)
 
 
+def check_notepad_definitions(page, context, url):
+    page.locator('#new-note').click(); page.locator('#note-title').fill('Notepad definitions'); page.locator('#modal-submit').click()
+    page.locator('#note-editor .cm-content').fill('A source for defined discoveries.')
+    expect(page.locator('#save-state')).to_have_text('Saved locally'); page.locator('#read-mode').click()
+    item_id = page.locator('.file-card.active').get_attribute('data-id')
+    page.locator('[data-filter="notepad"]').click()
+    editor = page.locator('#notepad-editor .cm-content'); editor.fill('Evidence supports a discovery.')
+    nav = page.locator('.notepad-page-nav')
+    assert nav.bounding_box()['height'] <= 28
+    for button in ['previous','add','next']:
+        assert page.locator(f'#notepad-{button}-page').bounding_box()['width'] <= 28
+    expect(page.locator('#notepad-page-label')).to_have_text('Page 1 of 1')
+    def select_word(word):
+        editor.focus()
+        editor.evaluate('''(container, word) => {
+          const walker = document.createTreeWalker(container,NodeFilter.SHOW_TEXT);
+          let node; while (node = walker.nextNode()) {
+            const start = node.textContent.indexOf(word); if (start < 0) continue;
+            const range = document.createRange(); range.setStart(node,start); range.setEnd(node,start+word.length);
+            getSelection().removeAllRanges(); getSelection().addRange(range); return;
+          } throw new Error('Word missing: '+word);
+        }''',word)
+        expect(page.locator('#notepad-define')).to_be_visible(); expect(page.locator('#notepad-define')).to_be_enabled()
+    popup = page.locator('#notepad-definition-popover')
+    select_word('Evidence'); page.locator('#notepad-define').click(); expect(popup).to_be_visible()
+    expect(page.locator('#notepad-definition-term')).to_have_text('Evidence')
+    page.screenshot(path=str(ARTIFACTS/'notepad-definition-create.png'),full_page=True)
+    page.locator('#notepad-definition-save').click(); expect(page.locator('#notepad-definition-error')).to_contain_text('Write a definition')
+    definition = "Facts that support a **reader's** finding.\n\n- café & observations\n- Questions to revisit"
+    page.locator('#notepad-definition-editor .cm-content').fill(definition)
+    page.locator('#notepad-definition-save').click(); expect(popup).to_be_hidden()
+    mark = page.locator('#notepad-editor .md-definition')
+    expect(mark).to_have_text('Evidence')
+    assert mark.evaluate('el => getComputedStyle(el).fontWeight') == '700'
+    assert '<span' not in editor.inner_text()
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    encoded = quote(definition,safe="~!*'()-._")
+    source = f'<span class="md-definition" data-definition="{encoded}">Evidence</span> supports a discovery.'
+    assert page.request.get(f'{url}/api/items/{item_id}/notepad').json()['markdown'] == source
+    for theme, modifier in [('light','Meta'),('dark','Control')]:
+        if page.locator('html').get_attribute('data-theme') != theme: page.locator('#theme-toggle').click()
+        mark.click(modifiers=[modifier]); expect(popup).to_be_visible()
+        expect(page.locator('#notepad-definition-display strong')).to_have_text("reader's")
+        expect(page.locator('#notepad-definition-display li')).to_have_count(2)
+        assert popup.evaluate('el => getComputedStyle(el).backgroundColor') == 'rgb(32, 42, 36)'
+        page.screenshot(path=str(ARTIFACTS/f'notepad-definition-{theme}.png'),full_page=True)
+        page.keyboard.press('Escape'); expect(popup).to_be_hidden()
+    page.locator('#notepad-add-page').click()
+    expect(page.locator('#notepad-page-label')).to_have_text('Page 2 of 2')
+    editor.fill('Another page.'); expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    page.locator('#notepad-previous-page').click(); expect(mark).to_have_text('Evidence')
+    page.reload(); page.locator('[data-filter="notepad"]').click(); expect(mark).to_have_text('Evidence')
+    mark.click(modifiers=['Meta']); page.locator('#notepad-definition-edit').click()
+    draft = page.locator('#notepad-definition-editor .cm-content')
+    draft.press('Meta+a'); page.keyboard.insert_text('A revised **definition**.'); draft.press('Meta+Enter')
+    expect(popup).to_be_hidden(); expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    other = context.new_page(); other.goto(url); other.locator('[data-filter="notepad"]').click()
+    expect(other.locator('#notepad-editor .md-definition')).to_have_text('Evidence')
+    mark.click(modifiers=['Control']); expect(page.locator('#notepad-definition-display')).to_have_text('A revised definition.')
+    page.locator('#notepad-definition-remove').click(); expect(mark).to_have_count(0)
+    expect(editor).to_have_text('Evidence supports a discovery.')
+    editor.press('Meta+z'); expect(mark).to_have_text('Evidence')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    # Changes made in another window are reflected when a definition is reopened.
+    other.locator('#notepad-editor .md-definition').click(modifiers=['Control'])
+    other.locator('#notepad-definition-edit').click()
+    other.locator('#notepad-definition-editor .cm-content').fill('A synced definition.')
+    other.locator('#notepad-definition-save').click()
+    expect(other.locator('#notepad-save-state')).to_have_text('Saved locally')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    page.wait_for_function('document.querySelector("#notepad-editor [data-definition-from]")?.title.includes("definition")')
+    page.wait_for_timeout(250)
+    mark.click(modifiers=['Control']); expect(page.locator('#notepad-definition-display')).to_have_text('A synced definition.')
+    page.keyboard.press('Escape'); other.close()
+    # Moving the word retains its metadata; undo restores the complete definition.
+    editor.press('Meta+Home'); page.keyboard.insert_text('New finding. ')
+    mark.click(modifiers=['Meta']); expect(page.locator('#notepad-definition-display')).to_have_text('A synced definition.')
+    page.keyboard.press('Escape')
+    # Exact definition markup also renders in tables; hostile definition text is literal Markdown.
+    hostile = '<script>window.__definitionUnsafe = true</script>\n\n[bad](javascript:alert(1))'
+    table_source = '| Term | Meaning |\n| --- | --- |\n| <span class="md-definition" data-definition="'+quote(hostile,safe="~!*'()-._")+'">Signal</span> | Finding |\n\n'
+    editor.press('Meta+a'); page.keyboard.insert_text(table_source); editor.press('Meta+End')
+    table_mark = page.locator('#notepad-editor .md-table-preview .md-definition')
+    expect(table_mark).to_have_text('Signal'); table_mark.click(modifiers=['Control'])
+    expect(page.locator('#notepad-definition-display')).to_contain_text('<script>')
+    assert page.locator('#notepad-definition-display script').count() == 0
+    assert not page.evaluate('window.__definitionUnsafe || false')
+    page.keyboard.press('Escape')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    page.locator('#notepad-source').click(); expect(editor).to_contain_text('data-definition')
+    page.locator('#notepad-source').click()
+    page.locator('.file-card').filter(has_text='Welcome to Notate').click()
+    print('Compact page controls and definitions passed: Cmd/Ctrl-click, Markdown, themes, edit/remove, undo, tables, safe rendering, reload, pages, and live sync.',flush=True)
+
+
+def check_notepad_pages(page, context, url):
+    title = 'Numbered Notepad pages'
+    note = page.request.post(url+'/api/notes',data={'title':title,'markdown':'A source for page one. A source for page two.'}).json()
+    item_id = note['id']; path = f'{url}/api/items/{item_id}/notepad'
+    legacy = '# First page\n\n<u><span class="md-text-purple">Existing thoughts.</span></u>'
+    page.request.patch(path,data={'revision':0,'markdown':legacy})
+    page.locator('.file-card').filter(has_text=title).click(); page.locator('[data-filter="notepad"]').click()
+    editor = page.locator('#notepad-editor .cm-content')
+    def replace(view, text):
+        view.locator('#notepad-editor .cm-content').press('ControlOrMeta+a'); view.keyboard.insert_text(text)
+    expect(page.locator('#notepad-page-label')).to_have_text('Page 1 of 1')
+    expect(page.locator('#notepad-previous-page')).to_be_disabled(); expect(page.locator('#notepad-next-page')).to_be_disabled()
+    expect(editor.locator('.md-text-purple')).to_have_text('Existing thoughts.')
+    nav = page.locator('.notepad-page-nav').bounding_box()
+    assert nav['y'] > page.locator('#notepad-context').bounding_box()['y']
+    assert nav['y']+nav['height'] <= page.locator('.notepad-toolbar').bounding_box()['y']
+    page.evaluate('window.__firstNotepadEditor = document.querySelector("#notepad-editor .cm-editor")')
+    editor.press('ControlOrMeta+End'); page.keyboard.insert_text('\n\nPage one update.')
+    page.locator('#notepad-add-page').click(); expect(page.locator('#notepad-page-label')).to_have_text('Page 2 of 2')
+    expect(page.locator('#notepad-next-page')).to_be_disabled()
+    replace(page,'Second page discovery.')
+    # Switching saves an edit immediately, before its autosave timer fires.
+    page.locator('#notepad-previous-page').click(); expect(page.locator('#notepad-page-label')).to_have_text('Page 1 of 2')
+    assert page.request.get(path+'?page=2').json()['markdown'] == 'Second page discovery.'
+    assert page.evaluate('window.__firstNotepadEditor === document.querySelector("#notepad-editor .cm-editor")')
+    editor.press('ControlOrMeta+z'); expect(editor).not_to_contain_text('Page one update.')
+    editor.press('ControlOrMeta+Shift+z'); expect(editor).to_contain_text('Page one update.')
+    other = context.new_page(); other.goto(url); expect(other.locator('#document-title')).to_have_text(title)
+    other.locator('[data-filter="notepad"]').click(); expect(other.locator('#notepad-page-label')).to_have_text('Page 1 of 2')
+    other.locator('#notepad-next-page').click(); expect(other.locator('#notepad-page-label')).to_have_text('Page 2 of 2')
+    replace(other,'# Page 2\n\nSecond page update.')
+    editor.press('ControlOrMeta+End'); page.keyboard.insert_text('\n\nIndependent page one edit.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    expect(other.locator('#notepad-save-state')).to_have_text('Saved locally')
+    expect(page.locator('#notepad-notice')).to_be_hidden(); expect(other.locator('#notepad-notice')).to_be_hidden()
+    expect(page.locator('#notepad-page-label')).to_have_text('Page 1 of 2')
+    other.locator('#notepad-add-page').click(); expect(other.locator('#notepad-page-label')).to_have_text('Page 3 of 3')
+    expect(page.locator('#notepad-page-label')).to_have_text('Page 1 of 3')
+    replace(other,'Page three finding.'); expect(other.locator('#notepad-save-state')).to_have_text('Saved locally')
+    page.locator('#notepad-next-page').click(); expect(editor).to_contain_text('Second page update.')
+    expect(page.locator('#notepad-page-label')).to_have_text('Page 2 of 3')
+    page.locator('#notepad-next-page').click(); expect(editor).to_contain_text('Page three finding.')
+    page.locator('#notepad-previous-page').click(); expect(page.locator('#notepad-page-label')).to_have_text('Page 2 of 3')
+    expect(editor).to_contain_text('Second page update.')
+    replace(page,'My page two conflict draft.')
+    latest = page.request.get(path+'?page=2').json()
+    page.request.patch(path+'?page=2',data={'revision':latest['revision'],'markdown':'Remote page two version.'})
+    expect(page.locator('#notepad-save-state')).to_have_text('Review conflicting edits')
+    page.locator('#notepad-next-page').click(); expect(page.locator('#notepad-page-label')).to_have_text('Page 2 of 3')
+    expect(editor).to_contain_text('My page two conflict draft.')
+    page.locator('#notepad-save-state').click(); expect(page.locator('#saved-pad-version')).to_have_text('Remote page two version.')
+    page.locator('#modal-cancel').click(); expect(editor).to_contain_text('Remote page two version.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    assert 'Independent page one edit.' in page.request.get(path).json()['markdown']
+    page.locator('#reader').focus()
+    select_text(page,'#note-content','A source for page two.'); page.locator('[data-annotate="pad"]').click()
+    expect(page.locator('#notepad-editor .md-pad-link')).to_have_text('A source for page two.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    link_id = page.request.get(f'{url}/api/items/{item_id}/annotations').json()[0]['id']
+    assert page.request.get(path+f'/links/{link_id}').json()['page'] == 2
+    assert '#notate-passage-' not in page.request.get(path).json()['markdown']
+    assert '#notate-passage-' not in page.request.get(path+'?page=3').json()['markdown']
+    page.locator('#notepad-previous-page').click(); expect(page.locator('#notepad-page-label')).to_have_text('Page 1 of 3')
+    page.reload(); expect(page.locator('#document-title')).to_have_text(title)
+    # Copying another page's link does not change the page being viewed.
+    page.locator('.annotation-copy').click()
+    page.wait_for_function("window.__copiedAnnotationText?.includes('Notepad page: 2')")
+    assert '## Linked Notepad text\n\n> A source for page two.' in page.evaluate('window.__copiedAnnotationText')
+    page.locator('[data-filter="notepad"]').click(); expect(page.locator('#notepad-page-label')).to_have_text('Page 1 of 3')
+    click_mark(page,'pad'); expect(page.locator('#notepad-page-label')).to_have_text('Page 2 of 3')
+    expect(page.locator('#notepad-editor .md-pad-link')).to_have_text('A source for page two.')
+    page.locator('#notepad-source').click(); expect(page.locator('#notepad-source')).to_have_attribute('aria-pressed','true')
+    page.locator('#notepad-previous-page').click(); expect(page.locator('#notepad-source')).to_have_attribute('aria-pressed','false')
+    page.locator('#notepad-next-page').click(); expect(page.locator('#notepad-source')).to_have_attribute('aria-pressed','true')
+    page.locator('#notepad-source').click()
+    saved = page.request.get(path+'?page=2').json()
+    page.evaluate("saved => localStorage.setItem('notate-notepad-draft-'+saved.item_id+'-page-2',JSON.stringify(saved))",
+                  {**saved,'markdown':saved['markdown']+'\n\nRecovered page two thought.'})
+    page.reload(); page.locator('[data-filter="notepad"]').click()
+    expect(page.locator('#notepad-page-label')).to_have_text('Page 2 of 3')
+    expect(editor).to_contain_text('Recovered page two thought.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    assert 'Recovered page two thought.' not in page.request.get(path).json()['markdown']
+    with page.expect_download() as download: page.locator('#notepad-download').click()
+    assert '-page-2.md' in download.value.suggested_filename
+    assert Path(download.value.path()).read_text() == page.request.get(path+'?page=2').json()['markdown']
+    exported = page.request.get(f'{url}/api/items/{item_id}/export').json()
+    assert [entry['page'] for entry in exported['notepad_pages']] == [1,2,3]
+    for theme in ['light','dark']:
+        if page.locator('html').get_attribute('data-theme') != theme: page.locator('#theme-toggle').click()
+        page.screenshot(path=str(ARTIFACTS/f'notepad-pages-{theme}.png'),full_page=True)
+    other.close(); page.locator('.file-card').filter(has_text='Welcome to Notate').click()
+    print('Numbered Notepad pages, legacy content, save-before-navigation, separate undo, independent sync, conflict/draft recovery, live page counts, cross-page links, reload, source modes, download, and export passed.',flush=True)
+
+
 def check_notepad_deletion(page, url):
     for title, remote in (('Deliberate notepad deletion',False),('Remote notepad deletion',True)):
         note = httpx.post(url+'/api/notes',json={'title':title,'markdown':''}).json()
@@ -771,7 +962,7 @@ def check_notepad_deletion(page, url):
     print('Deliberate document deletion clears its notepad; remote deletion preserves drafts and can recover them as a new note.',flush=True)
 
 
-def run(additional_pdf=None, links_only=False, templates_only=False, formatting_only=False):
+def run(additional_pdf=None, links_only=False, templates_only=False, formatting_only=False, pages_only=False, definitions_only=False):
     ARTIFACTS.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='notate-browser-') as temporary:
         with socket.socket() as socket_handle:
@@ -796,6 +987,18 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                 page.goto(url); expect(page.locator('#document-title')).to_have_text('Welcome to Notate')
                 expect(page.locator('#connection-label')).to_contain_text('synced')
                 print('Workspace loads and connects to live sync.',flush=True)
+                if definitions_only:
+                    try: check_notepad_definitions(page,context,url)
+                    except BaseException:
+                        print('Definition browser errors:',errors,flush=True)
+                        page.screenshot(path=str(ARTIFACTS/'notepad-definition-failure.png'),full_page=True)
+                        raise
+                    assert not errors, errors; assert not outside_requests, outside_requests
+                    browser.close(); return
+                if pages_only:
+                    check_notepad_pages(page,context,url)
+                    assert not errors, errors; assert not outside_requests, outside_requests
+                    browser.close(); return
                 if formatting_only:
                     check_notepad_text_formatting(page,context,url,'Meta')
                     linux = browser.new_context(viewport={'width':1512,'height':982})
@@ -836,6 +1039,8 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                 check_question_example_shortcuts(linux_page,url,'Control')
                 check_notepad_text_formatting(linux_page,linux,url,'Control')
                 linux.close()
+                check_notepad_pages(page,context,url)
+                check_notepad_definitions(page,context,url)
                 check_notepad_deletion(page,url)
 
                 page.locator('#add-folder').click(); page.locator('#folder-name').fill('Research')
@@ -1113,6 +1318,10 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                 phone.locator('[data-annotate="pad"]').click()
                 expect(phone.locator('#annotations-panel')).to_be_visible()
                 expect(phone.locator('#notepad-editor .md-pad-link')).to_have_text('Your discoveries belong together in Notate.')
+                phone.locator('#notepad-add-page').click(); expect(phone.locator('#notepad-page-label')).to_have_text('Page 2 of 2')
+                phone.locator('#notepad-editor .cm-content').fill('A second mobile page.')
+                phone.locator('#notepad-previous-page').click(); expect(phone.locator('#notepad-page-label')).to_have_text('Page 1 of 2')
+                expect(phone.locator('#notepad-editor .md-pad-link')).to_have_text('Your discoveries belong together in Notate.')
                 phone.locator('#notepad-editor .md-pad-link').click()
                 expect(phone.locator('#annotations-panel')).to_be_hidden()
                 expect(phone.locator('#reader')).to_be_focused()
@@ -1179,5 +1388,7 @@ if __name__ == '__main__':
     parser.add_argument('--links-only',action='store_true',help='Check passage links in an isolated workspace without the other UI checks.')
     parser.add_argument('--templates-only',action='store_true',help='Check Markdown template shortcuts in every editor on macOS and Linux.')
     parser.add_argument('--formatting-only',action='store_true',help='Check Notepad text colors, underline, and keyboard shortcuts on macOS and Linux.')
+    parser.add_argument('--pages-only',action='store_true',help='Check numbered Notepad pages, sync, persistence, and passage links.')
+    parser.add_argument('--definitions-only',action='store_true',help='Check Notepad definitions and compact page controls.')
     args = parser.parse_args()
-    run(args.pdf,args.links_only,args.templates_only,args.formatting_only)
+    run(args.pdf,args.links_only,args.templates_only,args.formatting_only,args.pages_only,args.definitions_only)

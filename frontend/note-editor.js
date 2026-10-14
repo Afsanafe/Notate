@@ -11,20 +11,28 @@ import MarkdownIt from 'markdown-it';
 const renderer = new MarkdownIt({html: false, breaks: true});
 export const TEXT_COLORS = ['red','orange','yellow','light-green','dark-green','light-blue','dark-blue','purple'];
 const colorOpening = /^<span class="md-text-(red|orange|yellow|light-green|dark-green|light-blue|dark-blue|purple)">/;
+const definitionOpening = /^<span class="md-definition" data-definition="((?:[a-zA-Z0-9_.!~*'()-]|%[a-fA-F0-9]{2})*)">/;
+function decodeDefinition(encoded) {
+  try { const value = decodeURIComponent(encoded); return value.trim() && value.length <= 20_000 ? value : null; }
+  catch { return null; }
+}
 const colorDelimiter = {}, underlineDelimiter = {};
 const textFormatting = {
-  defineNodes: ['TextColor','Underline','TextFormatMark'],
+  defineNodes: ['TextColor','Underline','DefinedText','TextFormatMark'],
   parseInline: [{name:'NotateTextFormat',before:'HTMLTag',parse(cx,next,pos) {
     if (next !== 60) return -1;
     const source = cx.slice(pos,cx.end), color = colorOpening.exec(source);
     if (color) return cx.addDelimiter(colorDelimiter,pos,pos+color[0].length,true,false);
+    const definition = definitionOpening.exec(source);
+    if (definition && decodeDefinition(definition[1]) !== null) return cx.addDelimiter(colorDelimiter,pos,pos+definition[0].length,true,false);
     if (source.startsWith('<u>')) return cx.addDelimiter(underlineDelimiter,pos,pos+3,true,false);
     const closing = source.startsWith('</span>') ? {type:colorDelimiter,name:'TextColor',length:7}
       : source.startsWith('</u>') ? {type:underlineDelimiter,name:'Underline',length:4} : null;
     if (!closing) return -1;
     const index = cx.findOpeningDelimiter(closing.type); if (index === null) return -1;
     const opening = cx.getDelimiterAt(index), content = cx.takeContent(index);
-    return cx.addElement(cx.elt(closing.name,opening.from,pos+closing.length,[
+    const name = definitionOpening.test(cx.slice(opening.from,opening.to)) ? 'DefinedText' : closing.name;
+    return cx.addElement(cx.elt(name,opening.from,pos+closing.length,[
       cx.elt('TextFormatMark',opening.from,opening.to),...content,cx.elt('TextFormatMark',pos,pos+closing.length)
     ]));
   }}]
@@ -33,13 +41,16 @@ const textFormatting = {
 // still escaped by markdown-it. Children keep normal Markdown formatting.
 renderer.inline.ruler.before('html_inline','notate_text_format',(state,silent) => {
   const source = state.src.slice(state.pos), color = colorOpening.exec(source);
-  const opening = color?.[0] || (source.startsWith('<u>') ? '<u>' : null);
+  const definition = definitionOpening.exec(source);
+  const defined = definition && decodeDefinition(definition[1]) !== null;
+  const opening = color?.[0] || (defined ? definition[0] : source.startsWith('<u>') ? '<u>' : null);
   if (opening) {
-    const closing = color ? '</span>' : '</u>';
+    const closing = color || defined ? '</span>' : '</u>';
     if (!source.includes(closing,opening.length)) return false;
     if (!silent) {
-      const token = state.push('notate_format_open',color ? 'span' : 'u',1);
+      const token = state.push('notate_format_open',color || defined ? 'span' : 'u',1);
       if (color) token.attrSet('class',`md-text-${color[1]}`);
+      if (defined) { token.attrSet('class','md-definition'); token.attrSet('data-definition',definition[1]); }
     }
     state.pos += opening.length; return true;
   }
@@ -57,13 +68,35 @@ renderer.inline.ruler.before('html_inline','notate_text_format',(state,silent) =
   state.pos += closing.length; return true;
 });
 renderer.renderer.rules.notate_format_open = (tokens,index) => tokens[index].tag === 'u' ? '<u>'
-  : `<span class="${tokens[index].attrGet('class')}">`;
+  : `<span class="${tokens[index].attrGet('class')}"${tokens[index].attrGet('data-definition') !== null ? ` data-definition="${renderer.utils.escapeHtml(tokens[index].attrGet('data-definition'))}"` : ''}>`;
 renderer.renderer.rules.notate_format_close = (tokens,index) => `</${tokens[index].tag}>`;
+export function renderEditorMarkdown(source) { return renderer.render(source); }
 // Notes' safe reading view has no embedded images. Table previews likewise
 // display image labels without fetching remote assets.
 renderer.renderer.rules.image = (tokens, index) => renderer.utils.escapeHtml(tokens[index].content);
 const changePreview = StateEffect.define();
 const passageLinkHandler = Facet.define({combine: values => values[0]});
+const definitionHandler = Facet.define({combine: values => values[0]});
+function definitionNode(state,node) {
+  if (node.name !== 'DefinedText') return null;
+  const first = node.node.firstChild, last = node.node.lastChild;
+  const match = definitionOpening.exec(state.doc.sliceString(first.from,first.to));
+  const definition = match && decodeDefinition(match[1]);
+  return definition === null || !match ? null : {from:node.from,to:node.to,start:first.to,end:last.from,
+    text:state.doc.sliceString(first.to,last.from),definition};
+}
+function definitions(state) {
+  const result = [], tree = ensureSyntaxTree(state,state.doc.length,100) || syntaxTree(state);
+  tree.iterate({enter(node) { const definition = definitionNode(state,node); if (definition) result.push(definition); }});
+  return result;
+}
+function activateDefinition(view,event,keyboard = false) {
+  const marked = event.target.closest?.('[data-definition-from]'), handler = view.state.facet(definitionHandler);
+  if (!marked || !handler || event.altKey || event.shiftKey || !keyboard && !(event.metaKey || event.ctrlKey)) return false;
+  const definition = definitions(view.state).find(item => item.from === Number(marked.dataset.definitionFrom));
+  if (!definition) return false;
+  event.preventDefault(); handler(definition,marked.getBoundingClientRect(),marked.textContent); return true;
+}
 function passageLink(state, node) {
   if (node.name !== 'Link') return null;
   const match = /^\[([\s\S]*?)\]\(#notate-passage-([a-f0-9]{32})\)$/.exec(state.doc.sliceString(node.from,node.to));
@@ -74,6 +107,9 @@ function passageLinks(state) {
   const tree = ensureSyntaxTree(state,state.doc.length,100) || syntaxTree(state);
   tree.iterate({enter(node) { const link = passageLink(state,node); if (link) links.push(link); }});
   return links;
+}
+export function getSourcePassageLinks(source) {
+  return passageLinks(EditorState.create({doc:source,extensions:markdown({extensions:[Table,Strikethrough,textFormatting]})}));
 }
 function activatePassageLink(view, event) {
   const link = event.target.closest?.('[data-passage-link]'); const handler = view.state.facet(passageLinkHandler);
@@ -133,6 +169,13 @@ class TablePreview extends WidgetType {
     // markdown-it has HTML disabled and rejects unsafe link protocols.
     container.innerHTML = renderer.render(this.source);
     styleInlineAnswers(container);
+    const items = definitions(view.state).filter(item => item.from >= this.from && item.to <= this.from+this.source.length);
+    container.querySelectorAll('.md-definition').forEach((mark,index) => {
+      if (!items[index]) return;
+      mark.dataset.definitionFrom = items[index].from; mark.setAttribute('role','button'); mark.tabIndex = 0;
+      mark.title = '⌘/Ctrl-click to view definition';
+      mark.addEventListener('keydown',event => { if (event.key === 'Enter' || event.key === ' ') activateDefinition(view,event,true); });
+    });
     container.querySelectorAll('a').forEach(link => {
       const match = /^#notate-passage-([a-f0-9]{32})$/.exec(link.getAttribute('href'));
       if (!match) return;
@@ -145,6 +188,7 @@ class TablePreview extends WidgetType {
     container.querySelectorAll('th,td').forEach((cell, index) => {
       cell.title = 'Click to edit this cell’s Markdown';
       cell.addEventListener('pointerdown', event => {
+        if (activateDefinition(view,event)) return;
         if (activatePassageLink(view,event)) return;
         event.preventDefault();
         const target = this.cells[index];
@@ -185,6 +229,11 @@ function liveDecorations(state) {
     if (passage) {
       mark(passage.start,passage.end,'md-pad-link',null,{'data-passage-link':passage.id,role:'link',tabindex:'0',title:'Jump to reading passage · ⌘/Ctrl-click to edit'});
       if (preview) { hide(from,passage.start); hide(passage.end,to); }
+    }
+    const definition = definitionNode(state,node);
+    if (definition) {
+      mark(definition.start,definition.end,'md-definition','span',{'data-definition-from':String(definition.from),role:'button',tabindex:'0',title:'⌘/Ctrl-click to view definition'});
+      if (preview) { hide(from,definition.start); hide(definition.end,to); }
     }
     if (!preview) return;
     if (name === 'TextColor' || name === 'Underline') {
@@ -289,9 +338,10 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     EditorState.transactionFilter.of(transaction => transaction.docChanged && transaction.newDoc.length > (options.maxLength || 5_000_000) ? [] : transaction),
     previewEnabled, livePreview,
     passageLinkHandler.of(options.onPassageLink),
+    definitionHandler.of(options.onDefinition),
     EditorView.domEventHandlers({
-      pointerdown: (event, editor) => event.button === 0 && activatePassageLink(editor,event),
-      keydown: (event, editor) => (event.key === 'Enter' || event.key === ' ') && activatePassageLink(editor,event)
+      pointerdown: (event, editor) => event.button === 0 && (activateDefinition(editor,event) || activatePassageLink(editor,event)),
+      keydown: (event, editor) => (event.key === 'Enter' || event.key === ' ') && (activateDefinition(editor,event,true) || activatePassageLink(editor,event))
     }),
     // Some platforms report shifted letters in lowercase, and synthetic
     // native events may omit keyCode. Handle Shift before letter fallback.
@@ -443,8 +493,47 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
       userEvent:'input',annotations:isolateHistory.of('full')});
     view.focus(); return true;
   }
+  function selectionCanDefine() {
+    if (!selectionCanFormat()) return false;
+    const {from,to} = view.state.selection.main;
+    if (/\n\s*\n/.test(view.state.doc.sliceString(from,to))) return false;
+    let allowed = true;
+    syntaxTree(view.state).iterate({from,to,enter(node) { if (node.name === 'InlineCode' && node.from < to && node.to > from) allowed = false; }});
+    return allowed;
+  }
+  function selectedDefinition() {
+    const {from,to} = view.state.selection.main;
+    return definitions(view.state).filter(item => item.start <= from && item.end >= to).at(-1) || null;
+  }
+  function setDefinition(value,target) {
+    const encoded = encodeURIComponent(value);
+    if (view.state.readOnly || decodeDefinition(encoded) === null) return false;
+    const opening = `<span class="md-definition" data-definition="${encoded}">`;
+    if (target.existing) {
+      const existing = definitions(view.state).find(item => item.from === target.from);
+      if (!existing || existing.definition !== target.definition || existing.text !== target.text) return false;
+      const changes = view.state.changes({from:existing.from,to:existing.start,insert:opening});
+      view.dispatch({changes,selection:view.state.selection.map(changes),userEvent:'input',annotations:isolateHistory.of('full')});
+    } else {
+      const {from,to,text} = target;
+      if (from < 0 || to <= from || to > view.state.doc.length || view.state.doc.sliceString(from,to) !== text) return false;
+      view.dispatch({changes:{from,to,insert:opening+text+'</span>'},selection:EditorSelection.single(from+opening.length,from+opening.length+text.length),
+        userEvent:'input',annotations:isolateHistory.of('full')});
+    }
+    view.focus(); return true;
+  }
+  function removeDefinition(target) {
+    if (view.state.readOnly) return false;
+    const existing = definitions(view.state).find(item => item.from === target.from);
+    if (!existing || existing.definition !== target.definition || existing.text !== target.text) return false;
+    const changes = view.state.changes([{from:existing.from,to:existing.start,insert:''},{from:existing.end,to:existing.to,insert:''}]);
+    view.dispatch({changes,selection:view.state.selection.map(changes),userEvent:'input',annotations:isolateHistory.of('full')});
+    view.focus(); return true;
+  }
   return {
     view, format, insertAnswer, insertTemplate,
+    selectionCanDefine, getSelectedDefinition: selectedDefinition, setDefinition, removeDefinition,
+    getDefinitions: () => definitions(view.state),
     selectionCanFormat,
     selectionIsUnderlined: () => !!selectionFormatNode('Underline'),
     applyTextColor: color => TEXT_COLORS.includes(color) && styleSelection('TextColor',`<span class="md-text-${color}">`,'</span>'),

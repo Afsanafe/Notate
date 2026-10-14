@@ -58,6 +58,12 @@ class Store:
                     markdown TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS notepad_pages (
+                    item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                    page_number INTEGER NOT NULL CHECK(page_number >= 2),
+                    markdown TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL, PRIMARY KEY(item_id,page_number)
+                );
                 CREATE INDEX IF NOT EXISTS items_folder ON items(folder_id);
                 CREATE INDEX IF NOT EXISTS annotations_item ON annotations(item_id);
                 CREATE INDEX IF NOT EXISTS comments_annotation ON comments(annotation_id);
@@ -128,10 +134,45 @@ class Store:
             item["has_pdf"] = bool(item["pdf_path"] or item["kind"] == "pdf")
             return item
 
-    def notepad(self, item_id):
+    def notepad(self, item_id, page=1):
         with self.connect() as db:
-            row = db.execute('SELECT * FROM notepads WHERE item_id=?', (item_id,)).fetchone()
+            row = self.notepad_row(db,item_id,page)
             return dict(row) if row else {'item_id': item_id, 'markdown': '', 'revision': 0, 'updated_at': None}
+
+    @staticmethod
+    def notepad_row(db, item_id, page=1):
+        return db.execute('SELECT item_id,markdown,revision,updated_at FROM notepads WHERE item_id=?', (item_id,)).fetchone() if page == 1 else db.execute(
+            'SELECT item_id,markdown,revision,updated_at FROM notepad_pages WHERE item_id=? AND page_number=?', (item_id,page)).fetchone()
+
+    @staticmethod
+    def write_notepad(db, record, page=1):
+        if page == 1:
+            db.execute('''INSERT INTO notepads (item_id,markdown,revision,updated_at)
+                VALUES (:item_id,:markdown,:revision,:updated_at)
+                ON CONFLICT(item_id) DO UPDATE SET markdown=excluded.markdown,
+                    revision=excluded.revision,updated_at=excluded.updated_at''', record)
+        else:
+            db.execute('''UPDATE notepad_pages SET markdown=:markdown,revision=:revision,updated_at=:updated_at
+                WHERE item_id=:item_id AND page_number=:page''', {**record,'page':page})
+
+    def notepad_page_list(self, item_id, include_content=False):
+        with self.connect() as db:
+            fields = 'item_id,markdown,revision,updated_at' if include_content else 'revision,updated_at'
+            first = db.execute(f'SELECT {fields} FROM notepads WHERE item_id=?',(item_id,)).fetchone()
+            empty = {'revision':0,'updated_at':None}
+            if include_content: empty.update(item_id=item_id,markdown='')
+            pages = [{'page':1,**(dict(first) if first else empty)}]
+            pages.extend(dict(row) for row in db.execute(f'''SELECT page_number AS page,{fields}
+                FROM notepad_pages WHERE item_id=? ORDER BY page_number''', (item_id,)))
+            return pages
+
+    def find_notepad_link(self, item_id, annotation_id):
+        marker = f'](#notate-passage-{annotation_id})'
+        with self.connect() as db:
+            return db.execute('''SELECT 1 AS page,item_id,markdown,revision,updated_at FROM notepads
+                WHERE item_id=? AND instr(markdown,?)>0
+                UNION ALL SELECT page_number AS page,item_id,markdown,revision,updated_at FROM notepad_pages
+                WHERE item_id=? AND instr(markdown,?)>0 ORDER BY page LIMIT 1''', (item_id,marker,item_id,marker)).fetchone()
 
     def annotations(self, item_id):
         with self.connect() as db:

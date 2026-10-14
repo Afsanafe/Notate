@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -131,6 +131,7 @@ class PadLinkInput(BaseModel):
     quote: str = Field(min_length=1, max_length=100_000)
     anchor: dict
     revision: int = Field(ge=0)
+    page: int = Field(default=1, ge=1)
     selection: PadSelection | None = None
 
 
@@ -360,25 +361,54 @@ def create_app(data_dir: str | Path, token: str | None = None):
         return public_item(item_or_404(item_id))
 
     @app.get('/api/items/{item_id}/notepad')
-    def get_notepad(item_id: str):
+    def get_notepad(item_id: str, page: int = Query(default=1,ge=1)):
         item_or_404(item_id)
-        return store.notepad(item_id)
+        with store.connect() as db:
+            if page > 1 and not store.notepad_row(db,item_id,page):
+                raise HTTPException(404,'This Notepad page no longer exists.')
+        return store.notepad(item_id,page)
+
+    @app.get('/api/items/{item_id}/notepad/pages')
+    def list_notepad_pages(item_id: str):
+        item_or_404(item_id)
+        return {'pages':store.notepad_page_list(item_id)}
+
+    @app.post('/api/items/{item_id}/notepad/pages',status_code=201)
+    async def add_notepad_page(item_id: str, request: Request):
+        with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('SELECT id FROM items WHERE id=?',(item_id,)).fetchone():
+                raise HTTPException(404,'This document no longer exists.')
+            page = db.execute('SELECT COALESCE(MAX(page_number),1)+1 FROM notepad_pages WHERE item_id=?',(item_id,)).fetchone()[0]
+            record = {'item_id':item_id,'markdown':'','revision':1,'updated_at':timestamp()}
+            db.execute('''INSERT INTO notepad_pages (item_id,page_number,markdown,revision,updated_at)
+                VALUES (:item_id,:page,:markdown,:revision,:updated_at)''',{**record,'page':page})
+        await hub.publish(request,'notepad',item_id)
+        return {'page':page,'notepad':record}
+
+    @app.get('/api/items/{item_id}/notepad/links/{annotation_id}')
+    def locate_notepad_link(item_id: str, annotation_id: str):
+        item_or_404(item_id)
+        row = store.find_notepad_link(item_id,annotation_id)
+        if not row:
+            raise HTTPException(404,'The linked Notepad text was removed. The original reading passage is still marked.')
+        record = dict(row); page = record.pop('page')
+        return {'page':page,'notepad':record}
 
     @app.patch('/api/items/{item_id}/notepad')
-    async def update_notepad(item_id: str, body: NotepadUpdate, request: Request):
+    async def update_notepad(item_id: str, body: NotepadUpdate, request: Request, page: int = Query(default=1,ge=1)):
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT id FROM items WHERE id=?', (item_id,)).fetchone():
                 raise HTTPException(404, 'This document no longer exists. Your notepad draft can be downloaded or saved as a new note.')
-            current = db.execute('SELECT revision FROM notepads WHERE item_id=?', (item_id,)).fetchone()
+            current = store.notepad_row(db,item_id,page)
+            if page > 1 and not current:
+                raise HTTPException(404,'This Notepad page no longer exists. Your draft can be downloaded or saved as a new note.')
             if (current['revision'] if current else 0) != body.revision:
                 raise HTTPException(409, 'This notepad changed in another window. Review the saved version before replacing it.')
             record = {'item_id': item_id, 'markdown': body.markdown,
                       'revision': body.revision + 1, 'updated_at': timestamp()}
-            db.execute('''INSERT INTO notepads (item_id,markdown,revision,updated_at)
-                VALUES (:item_id,:markdown,:revision,:updated_at)
-                ON CONFLICT(item_id) DO UPDATE SET markdown=excluded.markdown,
-                    revision=excluded.revision, updated_at=excluded.updated_at''', record)
+            store.write_notepad(db,record,page)
         await hub.publish(request, 'notepad', item_id)
         return record
 
@@ -449,7 +479,9 @@ def create_app(data_dir: str | Path, token: str | None = None):
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT id FROM items WHERE id=?', (item_id,)).fetchone():
                 raise HTTPException(404, 'This document no longer exists.')
-            pad = db.execute('SELECT markdown,revision FROM notepads WHERE item_id=?', (item_id,)).fetchone()
+            pad = store.notepad_row(db,item_id,body.page)
+            if body.page > 1 and not pad:
+                raise HTTPException(404,'This Notepad page no longer exists.')
             source, revision = (pad['markdown'], pad['revision']) if pad else ('', 0)
             if revision != body.revision:
                 raise HTTPException(409, 'This notepad changed in another window. Review the saved version before linking.')
@@ -475,10 +507,7 @@ def create_app(data_dir: str | Path, token: str | None = None):
             if len(markdown) > 5_000_000:
                 raise HTTPException(422, 'The notepad is full. Shorten it before adding a link.')
             record = {'item_id': item_id, 'markdown': markdown, 'revision': revision + 1, 'updated_at': now}
-            db.execute('''INSERT INTO notepads (item_id,markdown,revision,updated_at)
-                VALUES (:item_id,:markdown,:revision,:updated_at)
-                ON CONFLICT(item_id) DO UPDATE SET markdown=excluded.markdown,
-                    revision=excluded.revision, updated_at=excluded.updated_at''', record)
+            store.write_notepad(db,record,body.page)
             db.execute('INSERT INTO annotations VALUES (?,?,?,?,?,?,?,?)',
                        (annotation_id, item_id, 'pad', 'orange', body.quote, json.dumps(body.anchor), 0, now))
         await hub.publish(request, 'notepad', item_id)
@@ -538,13 +567,15 @@ def create_app(data_dir: str | Path, token: str | None = None):
             db.execute('BEGIN IMMEDIATE')
             annotation = annotation_or_404(db, annotation_id)
             if annotation['kind'] == 'pad':
-                pad = db.execute('SELECT markdown FROM notepads WHERE item_id=?', (annotation['item_id'],)).fetchone()
-                if pad:
+                pages = db.execute('''SELECT 1 AS page,item_id,markdown,revision,updated_at FROM notepads WHERE item_id=?
+                    UNION ALL SELECT page_number AS page,item_id,markdown,revision,updated_at FROM notepad_pages WHERE item_id=?''',
+                    (annotation['item_id'],annotation['item_id'])).fetchall()
+                for pad in pages:
                     # Remove the link's Markdown wrapper while keeping its text.
                     markdown = unlink_pad_text(pad['markdown'], annotation_id)
                     if markdown != pad['markdown']:
-                        db.execute('UPDATE notepads SET markdown=?,revision=revision+1,updated_at=? WHERE item_id=?',
-                                   (markdown, timestamp(), annotation['item_id']))
+                        store.write_notepad(db,{'item_id':annotation['item_id'],'markdown':markdown,
+                            'revision':pad['revision']+1,'updated_at':timestamp()},pad['page'])
                         pad_changed = True
             db.execute("DELETE FROM annotations WHERE id=?", (annotation_id,))
         if pad_changed:
@@ -582,7 +613,8 @@ def create_app(data_dir: str | Path, token: str | None = None):
     @app.get("/api/items/{item_id}/export")
     def export_item(item_id: str):
         item = public_item(item_or_404(item_id))
-        return JSONResponse({"document": item, "annotations": store.annotations(item_id), "notepad": store.notepad(item_id)},
+        return JSONResponse({"document": item, "annotations": store.annotations(item_id), "notepad": store.notepad(item_id),
+                             'notepad_pages':store.notepad_page_list(item_id,include_content=True)},
                             headers={"Content-Disposition": 'attachment; filename="notate-annotations.json"'})
 
     @app.get("/api/backup")
