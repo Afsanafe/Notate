@@ -856,7 +856,13 @@ def check_notepad_pages(page, context, url):
     expect(page.locator('#notepad-previous-page')).to_be_disabled(); expect(page.locator('#notepad-next-page')).to_be_disabled()
     expect(editor.locator('.md-text-purple')).to_have_text('Existing thoughts.')
     nav = page.locator('.notepad-page-nav').bounding_box()
-    assert nav['y'] > page.locator('#notepad-context').bounding_box()['y']
+    heading = page.locator('.notepad-heading').bounding_box()
+    filename = page.locator('#notepad-context').bounding_box()
+    status = page.locator('#notepad-save-state').bounding_box()
+    assert abs(filename['x']-heading['x']) < 1
+    assert abs(nav['x']+nav['width']/2-heading['x']-heading['width']/2) < 1
+    assert abs(status['x']+status['width']-heading['x']-heading['width']) < 1
+    assert heading['y'] <= nav['y'] and nav['y']+nav['height'] <= heading['y']+heading['height']
     assert nav['y']+nav['height'] <= page.locator('.notepad-toolbar').bounding_box()['y']
     page.evaluate('window.__firstNotepadEditor = document.querySelector("#notepad-editor .cm-editor")')
     editor.press('ControlOrMeta+End'); page.keyboard.insert_text('\n\nPage one update.')

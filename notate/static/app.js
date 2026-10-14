@@ -332,7 +332,7 @@ function renderHeading() {
   const item = state.active; if (!item) return;
   document.title = `${item.title} — Notate`;
   $('#document-title').textContent = item.title; $('#document-title').title = item.title;
-  $('#notepad-context').textContent = item.title;
+  $('#notepad-context').textContent = $('#notepad-context').title = item.title;
   $('#document-eyebrow').textContent = item.kind === 'note' ? 'A SPACE FOR YOUR THOUGHTS' : 'YOUR READING ROOM';
   $('#document-meta').innerHTML = `<span class="type-tag ${item.kind}">${item.kind === 'pdf' ? 'PDF' : item.kind === 'note' ? 'NOTE' : item.has_pdf ? 'DOCUMENT · PDF VIEW' : 'DOCUMENT'}</span><span>${icon('folder')} ${escapeHTML(folderName(item.folder_id))}</span>${item.page_count ? `<span class="meta-separator">·</span><span>${item.page_count} pages</span>` : ''}<span class="meta-separator updated-label">·</span><span class="updated-label">Updated ${age(item.updated_at)}</span>`;
   $('#document-menu').disabled = false; $('#toggle-annotations').disabled = false;
@@ -534,7 +534,7 @@ function mountNotepadPage(pad) {
   if (pad.dirty && !pad.conflict) pad.timer = setTimeout(() => saveNotepad(pad),650);
 }
 async function ensureNotepad(pageNumber = null) {
-  $('#notepad-context').textContent = state.active?.title || 'Open a document to start a notepad.';
+  $('#notepad-context').textContent = $('#notepad-context').title = state.active?.title || 'Open a document to start a notepad.';
   if (!state.active) return false;
   if (state.notepad && (pageNumber === null || state.notepad.pageNumber === pageNumber)) return true;
   if (state.notepadLoading) { await state.notepadLoading; return ensureNotepad(pageNumber); }
