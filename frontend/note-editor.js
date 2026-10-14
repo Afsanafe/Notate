@@ -9,6 +9,56 @@ import {Table, Strikethrough} from '@lezer/markdown';
 import MarkdownIt from 'markdown-it';
 
 const renderer = new MarkdownIt({html: false, breaks: true});
+export const TEXT_COLORS = ['red','orange','yellow','light-green','dark-green','light-blue','dark-blue','purple'];
+const colorOpening = /^<span class="md-text-(red|orange|yellow|light-green|dark-green|light-blue|dark-blue|purple)">/;
+const colorDelimiter = {}, underlineDelimiter = {};
+const textFormatting = {
+  defineNodes: ['TextColor','Underline','TextFormatMark'],
+  parseInline: [{name:'NotateTextFormat',before:'HTMLTag',parse(cx,next,pos) {
+    if (next !== 60) return -1;
+    const source = cx.slice(pos,cx.end), color = colorOpening.exec(source);
+    if (color) return cx.addDelimiter(colorDelimiter,pos,pos+color[0].length,true,false);
+    if (source.startsWith('<u>')) return cx.addDelimiter(underlineDelimiter,pos,pos+3,true,false);
+    const closing = source.startsWith('</span>') ? {type:colorDelimiter,name:'TextColor',length:7}
+      : source.startsWith('</u>') ? {type:underlineDelimiter,name:'Underline',length:4} : null;
+    if (!closing) return -1;
+    const index = cx.findOpeningDelimiter(closing.type); if (index === null) return -1;
+    const opening = cx.getDelimiterAt(index), content = cx.takeContent(index);
+    return cx.addElement(cx.elt(closing.name,opening.from,pos+closing.length,[
+      cx.elt('TextFormatMark',opening.from,opening.to),...content,cx.elt('TextFormatMark',pos,pos+closing.length)
+    ]));
+  }}]
+};
+// Table previews permit only our exact formatting tags, with all other HTML
+// still escaped by markdown-it. Children keep normal Markdown formatting.
+renderer.inline.ruler.before('html_inline','notate_text_format',(state,silent) => {
+  const source = state.src.slice(state.pos), color = colorOpening.exec(source);
+  const opening = color?.[0] || (source.startsWith('<u>') ? '<u>' : null);
+  if (opening) {
+    const closing = color ? '</span>' : '</u>';
+    if (!source.includes(closing,opening.length)) return false;
+    if (!silent) {
+      const token = state.push('notate_format_open',color ? 'span' : 'u',1);
+      if (color) token.attrSet('class',`md-text-${color[1]}`);
+    }
+    state.pos += opening.length; return true;
+  }
+  const closing = source.startsWith('</span>') ? '</span>' : source.startsWith('</u>') ? '</u>' : null;
+  if (!closing) return false;
+  const tag = closing === '</span>' ? 'span' : 'u';
+  let depth = 0, matched = false;
+  for (let index = state.tokens.length-1; index >= 0; index--) {
+    const token = state.tokens[index]; if (token.tag !== tag) continue;
+    if (token.type === 'notate_format_close') depth++;
+    else if (token.type === 'notate_format_open') { if (!depth) { matched = true; break; } depth--; }
+  }
+  if (!matched) return false;
+  if (!silent) state.push('notate_format_close',tag,-1);
+  state.pos += closing.length; return true;
+});
+renderer.renderer.rules.notate_format_open = (tokens,index) => tokens[index].tag === 'u' ? '<u>'
+  : `<span class="${tokens[index].attrGet('class')}">`;
+renderer.renderer.rules.notate_format_close = (tokens,index) => `</${tokens[index].tag}>`;
 // Notes' safe reading view has no embedded images. Table previews likewise
 // display image labels without fetching remote assets.
 renderer.renderer.rules.image = (tokens, index) => renderer.utils.escapeHtml(tokens[index].content);
@@ -137,6 +187,12 @@ function liveDecorations(state) {
       if (preview) { hide(from,passage.start); hide(passage.end,to); }
     }
     if (!preview) return;
+    if (name === 'TextColor' || name === 'Underline') {
+      const first = node.node.firstChild, last = node.node.lastChild;
+      const color = name === 'TextColor' && colorOpening.exec(state.doc.sliceString(first.from,first.to));
+      mark(first.to,last.from,color ? `md-text-${color[1]}` : 'md-underline',name === 'Underline' ? 'u' : 'span');
+      hide(first.from,first.to); hide(last.from,last.to);
+    }
     const labelKind = templateLabel(state,node), bodyKind = templateBody(state,node);
     if (labelKind === 'example' && node.node.parent?.name === 'Paragraph') {
       for (let number = state.doc.lineAt(to).number + 1; number <= state.doc.lineAt(node.node.parent.to).number; number++) {
@@ -224,7 +280,7 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
   const editing = new Compartment();
   parent.classList.add('markdown-editor');
   const view = new EditorView({parent, state: EditorState.create({doc: source, extensions: [
-    markdown({extensions: [Table, Strikethrough], completeHTMLTags: false}),
+    markdown({extensions: [Table, Strikethrough, textFormatting], completeHTMLTags: false}),
     indentUnit.of('\t'), EditorState.tabSize.of(4),
     history(), drawSelection(), dropCursor(), EditorView.lineWrapping,
     editing.of([EditorState.readOnly.of(false), EditorView.editable.of(true)]),
@@ -241,6 +297,9 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     // native events may omit keyCode. Handle Shift before letter fallback.
     Prec.high(EditorView.domEventHandlers({keydown: event => {
       if (event.altKey || !(event.metaKey || event.ctrlKey) || !event.shiftKey) return false;
+      if (event.key.toLowerCase() === 'h' && options.onApplyTextColor) {
+        event.preventDefault(); options.onApplyTextColor(); return true;
+      }
       const kind = {e:'example',m:'question'}[event.key.toLowerCase()];
       if (!kind) return false;
       event.preventDefault(); insertTemplate(kind); return true;
@@ -251,6 +310,7 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
       {key: 'Mod-e', run: () => { insertAnswer(); return true; }},
       {key: 'Mod-Shift-m', run: () => { insertTemplate('question'); return true; }},
       {key: 'Mod-Shift-e', run: () => { insertTemplate('example'); return true; }},
+      ...(options.onApplyTextColor ? [{key:'Mod-Shift-h',run:() => { options.onApplyTextColor(); return true; }}] : []),
       {key: 'Enter', run: finishTemplateLine},
       ...(options.onSubmit ? [{key:'Mod-Enter', run: () => { options.onSubmit(); return true; }}] : [])
     ])),
@@ -276,6 +336,7 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
   }
   function format(kind) {
     if (view.state.readOnly) return;
+    if (kind === 'underline') return styleSelection('Underline','<u>','</u>');
     if (kind === 'bold' || kind === 'italic') return wrap(kind === 'bold' ? '**' : '*');
     const {from, to} = view.state.selection.main;
     const first = view.state.doc.lineAt(from), last = view.state.doc.lineAt(to);
@@ -304,6 +365,7 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     view.focus();
   }
   function finishTemplateLine() {
+    if (view.state.readOnly) return false;
     const selection = view.state.selection.main;
     if (!selection.empty) return false;
     const line = view.state.doc.lineAt(selection.head), exampleBullet = /^([ \t]+)[-+*] (.*)$/.exec(line.text);
@@ -339,8 +401,53 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     }
     return insertNewlineContinueMarkup(view) || insertNewline(view);
   }
+  function selectionCanFormat() {
+    const {from,to,empty} = view.state.selection.main;
+    if (view.state.readOnly || empty || !view.state.doc.sliceString(from,to).trim()) return false;
+    let allowed = true;
+    syntaxTree(view.state).iterate({from,to,enter(node) {
+      if (['FencedCode','CodeBlock'].includes(node.name) && node.from < to && node.to > from) allowed = false;
+    }});
+    return allowed;
+  }
+  function selectionFormatNode(name) {
+    const {from,to} = view.state.selection.main;
+    let found = null;
+    syntaxTree(view.state).iterate({from,to,enter(node) {
+      if (node.name === name && node.node.firstChild.to === from && node.node.lastChild.from === to) found = node.node;
+    }});
+    return found;
+  }
+  function styleSelection(name,opening,closing) {
+    if (!selectionCanFormat()) return false;
+    const {from,to} = view.state.selection.main, existing = selectionFormatNode(name);
+    let changes;
+    if (existing) {
+      changes = [{from:existing.firstChild.from,to:existing.firstChild.to,insert:name === 'Underline' ? '' : opening}];
+      if (name === 'Underline') changes.push({from:existing.lastChild.from,to:existing.lastChild.to,insert:''});
+    } else {
+      changes = [];
+      // Wrap each selected line separately, retaining paragraph/list structure
+      // and allowing selections across blank lines to round-trip as Markdown.
+      const first = view.state.doc.lineAt(from), last = view.state.doc.lineAt(to);
+      for (let number = first.number; number <= last.number; number++) {
+        const line = view.state.doc.line(number), prefix = /^[ \t]*(?:(?:#{1,6}|>|[-+*]|\d+[.)])[ \t]+)*/.exec(line.text)[0];
+        const start = Math.max(from,line.from+prefix.length), end = Math.min(to,line.to);
+        if (end <= start || !view.state.doc.sliceString(start,end).trim()) continue;
+        changes.push({from:start,insert:opening},{from:end,insert:closing});
+      }
+    }
+    if (!changes.length) return false;
+    const changeSet = view.state.changes(changes);
+    view.dispatch({changes:changeSet,selection:EditorSelection.single(changeSet.mapPos(from,1),changeSet.mapPos(to,-1)),
+      userEvent:'input',annotations:isolateHistory.of('full')});
+    view.focus(); return true;
+  }
   return {
     view, format, insertAnswer, insertTemplate,
+    selectionCanFormat,
+    selectionIsUnderlined: () => !!selectionFormatNode('Underline'),
+    applyTextColor: color => TEXT_COLORS.includes(color) && styleSelection('TextColor',`<span class="md-text-${color}">`,'</span>'),
     setReadOnly: value => view.dispatch({effects: editing.reconfigure([EditorState.readOnly.of(value), EditorView.editable.of(!value)])}),
     getSource: () => view.state.doc.toString(),
     getPassageLinks: () => passageLinks(view.state),

@@ -234,13 +234,34 @@ def run():
                 window.evaluate_js("document.querySelector('#theme-toggle').click()")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-question-text')).color") == 'rgb(241, 205, 103)'
                 results['question_example_shortcuts'] = 'passed'
+                window.evaluate_js("document.querySelector('[data-filter=notepad]').click()")
+                wait_for("!!document.querySelector('#notepad-editor .cm-content')")
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').focus(); document.execCommand('insertText',false,'Native colored thought.')")
+                wait_for("document.querySelector('#notepad-editor .cm-content').textContent === 'Native colored thought.' && !document.querySelector('#notepad-editor .cm-placeholder')")
+                window.evaluate_js("document.querySelector('#notepad-color-toggle').click(); document.querySelector('[data-notepad-color=purple]').click()")
+                wait_for("document.querySelector('#notepad-color-toggle').ariaLabel === 'Text color: Purple'")
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').focus(); getSelection().selectAllChildren(document.querySelector('#notepad-editor .cm-line'))")
+                wait_for("document.querySelector('#notepad-selection-toolbar').hidden === false && !document.querySelector('#notepad-underline').disabled")
+                window.evaluate_js("document.querySelector('#notepad-underline').click()")
+                wait_for("document.querySelector('#notepad-editor .md-underline')?.textContent === 'Native colored thought.'")
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'H',code:'KeyH',metaKey:true,shiftKey:true,bubbles:true,cancelable:true}))")
+                wait_for("document.querySelector('#notepad-editor u .md-text-purple')?.textContent === 'Native colored thought.'")
+                wait_for("document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
+                assert httpx.get(url+f'/api/items/{template_id}/notepad').json()['markdown'] == '<u><span class="md-text-purple">Native colored thought.</span></u>'
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-editor .md-text-purple')).color") == 'rgb(211, 162, 239)'
+                window.evaluate_js("document.querySelector('#theme-toggle').click()")
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-editor .md-text-purple')).color") == 'rgb(123, 61, 170)'
+                results['notepad_text_formatting'] = 'passed'
                 results.update(status='passed',native_engine='macOS WKWebView',pdf_text_selection=True,comment_saved_in_shared_backend=True,
                                dark_mode=True,contained_selection=True,passage_popup_reply=True,popup_toggle=True,copy_markdown=True,markdown_preview=True,answer_types=True,
                                note_markdown_live_preview=True,note_tables=True,comment_live_editing=True,command_shortcuts=True,document_notepad=True,inline_answer_shortcut=True)
-                print('Native live Markdown comments, Command B/I shortcuts, document Notepad, note editing, tables, annotations, and blue answers passed.',flush=True)
+                print('Native Markdown editors, shortcuts, Notepad colors/underline, tables, annotations, and blue answers passed.',flush=True)
             except BaseException as error:
                 results.update(status='failed',error=str(error))
                 print(f'Desktop verification failed: {error}',flush=True)
+                try:
+                    print(window.evaluate_js("({notepad:document.querySelector('#notepad-editor')?.innerHTML.slice(0,1500),palette:document.querySelector('#notepad-color-toggle')?.ariaLabel,selection:getSelection().toString()})"),flush=True)
+                except Exception: pass
             finally:
                 window.destroy()
 

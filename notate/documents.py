@@ -27,7 +27,8 @@ from pypdf.errors import DependencyError
 
 ALLOWED_TAGS = ["p", "br", "strong", "em", "b", "i", "u", "s", "h1", "h2", "h3", "h4", "h5", "h6",
                 "ul", "ol", "li", "blockquote", "pre", "code", "a", "hr", "table", "thead",
-                "tbody", "tr", "th", "td"]
+                "tbody", "tr", "th", "td", "span"]
+TEXT_COLORS = {'red','orange','yellow','light-green','dark-green','light-blue','dark-blue','purple'}
 
 
 def note_attribute(tag, name, value):
@@ -35,6 +36,7 @@ def note_attribute(tag, name, value):
         return True
     return name == 'class' and ((tag == 'strong' and value in {'md-answer-label','md-question-label','md-example-label'})
         or (tag == 'em' and value in {'md-answer-text','md-question-text','md-example-text'})
+        or (tag == 'span' and value in {f'md-text-{color}' for color in TEXT_COLORS})
         or (tag == 'ul' and value in {'md-list-disc','md-list-circle','md-list-square',
                                      'md-list-disc md-example-list', 'md-list-circle md-example-list',
                                      'md-list-square md-example-list'}))
@@ -120,6 +122,10 @@ def render_note_markdown(value):
 
 
 class NoteMarkdownConverter(MarkdownConverter):
+    def convert_span(self, el, text, parent_tags):
+        color = next((name for name in el.get('class',[]) if name in {f'md-text-{color}' for color in TEXT_COLORS}),None)
+        return f'<span class="{color}">{text}</span>' if color else text
+
     def convert_u(self, el, text, parent_tags):
         # Markdown has no underline syntax; retain existing underlined text.
         return f'<u>{text}</u>'

@@ -61,7 +61,11 @@ def select_text(page, selector, quote, existing=False):
 
 def click_mark(page, kind, segment=0):
     mark = page.locator(f'.annotation-mark.{kind}').nth(segment)
-    bounds = mark.bounding_box()
+    bounds = None
+    for _ in range(3):
+        expect(mark).to_be_visible()
+        bounds = mark.bounding_box()
+        if bounds: break
     assert bounds
     page.mouse.click(bounds['x']+bounds['width']*.55,bounds['y']+bounds['height']*.5)
 
@@ -664,6 +668,84 @@ def check_comments_notepad_and_shortcuts(page, url, modifier, label):
     print(f'{modifier} B/I shortcuts work in notes, comments, replies, popups, and Notepad; Notepad saves, syncs, isolates documents, preserves conflicts, and recovers drafts.',flush=True)
 
 
+def check_notepad_text_formatting(page, context, url, modifier):
+    title = modifier+' Notepad text formatting'
+    page.locator('#new-note').click(); page.locator('#note-title').fill(title); page.locator('#modal-submit').click()
+    page.locator('#note-editor .cm-content').fill('A source for discoveries.')
+    expect(page.locator('#save-state')).to_have_text('Saved locally'); page.locator('#read-mode').click()
+    item_id = page.locator('.file-card.active').get_attribute('data-id')
+    page.locator('[data-filter="notepad"]').click()
+    editor = page.locator('#notepad-editor .cm-content'); toolbar = page.locator('#notepad-selection-toolbar')
+    def replace(value):
+        editor.press(modifier+'+a'); page.keyboard.insert_text(value)
+    # Exact formatting tags also render safely inside live table previews.
+    replace('| Color | Detail |\n| --- | --- |\n| <span class="md-text-red">**Bold**</span> | <u>Underlined</u> |\n\n`<span class="md-text-red">literal</span>`\n\n')
+    editor.press(modifier+'+End')
+    expect(page.locator('#notepad-editor .md-table-preview .md-text-red strong')).to_have_text('Bold')
+    expect(page.locator('#notepad-editor .md-table-preview u')).to_have_text('Underlined')
+    expect(page.locator('#notepad-editor .md-inline-code')).to_contain_text('<span class="md-text-red">literal</span>')
+    # Color selection without selected text sets the shortcut preference.
+    replace('A colored discovery.')
+    page.locator('#notepad-color-toggle').click(); expect(toolbar).to_be_visible()
+    expect(page.locator('#notepad-underline')).to_be_disabled()
+    page.locator('[data-notepad-color="purple"]').click()
+    expect(editor.locator('.md-text-purple')).to_have_count(0)
+    editor.press(modifier+'+a'); expect(toolbar).to_be_visible()
+    page.locator('#notepad-underline').click(); expect(editor.locator('u')).to_have_text('A colored discovery.')
+    page.locator('#notepad-underline').click(); expect(editor.locator('u')).to_have_count(0)
+    page.locator('#notepad-underline').click()
+    editor.press(modifier+'+Shift+h'); expect(editor.locator('.md-text-purple')).to_have_text('A colored discovery.')
+    editor.press(modifier+'+z'); expect(editor.locator('.md-text-purple')).to_have_count(0)
+    editor.press(modifier+'+Shift+z' if modifier == 'Meta' else modifier+'+y')
+    expect(editor.locator('.md-text-purple')).to_have_text('A colored discovery.')
+    colors = ['red','orange','yellow','light-green','dark-green','light-blue','dark-blue','purple']
+    for theme in ['light','dark']:
+        if page.locator('html').get_attribute('data-theme') != theme: page.locator('#theme-toggle').click()
+        editor.focus(); expect(toolbar).to_be_visible()
+        for color in colors:
+            page.locator(f'[data-notepad-color="{color}"]').click()
+            colored = editor.locator(f'.md-text-{color}')
+            expect(colored).to_have_text('A colored discovery.')
+            assert editor.locator('[class*="md-text-"]').count() == 1, 'Recoloring should replace the existing color.'
+            style = colored.evaluate('node => getComputedStyle(node).color')
+            swatch = page.locator(f'[data-notepad-color="{color}"] span').evaluate('node => getComputedStyle(node).backgroundColor')
+            assert style == swatch
+            contrast = colored.evaluate('''node => {
+              const luminance = value => value.match(/[\\d.]+/g).slice(0,3).map(Number).map(v => {v/=255; return v<=.04045?v/12.92:((v+.055)/1.055)**2.4;}).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
+              const ink = luminance(getComputedStyle(node).color), paper = luminance(getComputedStyle(document.querySelector('#notepad-editor')).backgroundColor);
+              return (Math.max(ink,paper)+.05)/(Math.min(ink,paper)+.05);
+            }''')
+            assert contrast >= 4.5, (color,theme,contrast)
+        page.screenshot(path=str(ARTIFACTS/f'notepad-colors-{modifier.lower()}-{theme}.png'),full_page=True)
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    source = '<u><span class="md-text-purple">A colored discovery.</span></u>'
+    assert page.request.get(f'{url}/api/items/{item_id}/notepad').json()['markdown'] == source
+    other = context.new_page(); other.goto(url); other.locator('[data-filter="notepad"]').click()
+    expect(other.locator('#notepad-editor u .md-text-purple')).to_have_text('A colored discovery.')
+    with page.expect_download() as download: page.locator('#notepad-download').click()
+    assert Path(download.value.path()).read_text() == source
+    page.reload(); page.locator('[data-filter="notepad"]').click()
+    expect(page.locator('#notepad-editor u .md-text-purple')).to_have_text('A colored discovery.')
+    expect(page.locator('#notepad-color-toggle')).to_have_attribute('aria-label','Text color: Purple')
+    replace('# Heading\n\n- First finding\n- Second finding'); editor.press(modifier+'+a'); editor.press(modifier+'+Shift+h')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    source = page.request.get(f'{url}/api/items/{item_id}/notepad').json()['markdown']
+    assert source.startswith('# <span class="md-text-purple">Heading</span>\n\n- <span') and '\n- <span' in source
+    # Existing passage links remain editable and can be colored/underlined.
+    replace('Linked colored thought.'); editor.press(modifier+'+a'); editor.press(modifier+'+Shift+h')
+    page.locator('#notepad-underline').click(); page.locator('#link-pad-selection').click()
+    select_text(page,'#note-content','A source for discoveries.'); page.locator('[data-annotate="pad"]').click()
+    link = page.locator('#notepad-editor .md-pad-link'); expect(link).to_have_text('Linked colored thought.')
+    expect(toolbar).to_be_visible(); expect(page.locator('#link-pad-selection')).to_be_disabled()
+    page.locator('[data-notepad-color="red"]').click(); expect(link.locator('.md-text-red')).to_have_text('Linked colored thought.')
+    link.click(); expect(page.locator('#reader')).to_be_focused(); click_mark(page,'pad')
+    expect(editor).to_be_focused(); expect(link).to_have_text('Linked colored thought.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    expect(other.locator('#notepad-editor .md-pad-link .md-text-red')).to_have_text('Linked colored thought.')
+    other.close(); page.locator('.file-card').filter(has_text='Welcome to Notate').click()
+    print(f'{modifier} Shift H, eight readable text colors, underline, selection popups, tables, undo/redo, saved Markdown, reload, sync, download, and passage links passed.',flush=True)
+
+
 def check_notepad_deletion(page, url):
     for title, remote in (('Deliberate notepad deletion',False),('Remote notepad deletion',True)):
         note = httpx.post(url+'/api/notes',json={'title':title,'markdown':''}).json()
@@ -689,7 +771,7 @@ def check_notepad_deletion(page, url):
     print('Deliberate document deletion clears its notepad; remote deletion preserves drafts and can recover them as a new note.',flush=True)
 
 
-def run(additional_pdf=None, links_only=False, templates_only=False):
+def run(additional_pdf=None, links_only=False, templates_only=False, formatting_only=False):
     ARTIFACTS.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='notate-browser-') as temporary:
         with socket.socket() as socket_handle:
@@ -714,6 +796,14 @@ def run(additional_pdf=None, links_only=False, templates_only=False):
                 page.goto(url); expect(page.locator('#document-title')).to_have_text('Welcome to Notate')
                 expect(page.locator('#connection-label')).to_contain_text('synced')
                 print('Workspace loads and connects to live sync.',flush=True)
+                if formatting_only:
+                    check_notepad_text_formatting(page,context,url,'Meta')
+                    linux = browser.new_context(viewport={'width':1512,'height':982})
+                    linux.add_init_script("Object.defineProperty(navigator,'platform',{configurable:true,get:()=> 'Linux x86_64'})")
+                    linux_page = linux.new_page(); linux_page.goto(url)
+                    check_notepad_text_formatting(linux_page,linux,url,'Control')
+                    linux.close(); assert not errors, errors; assert not outside_requests, outside_requests
+                    browser.close(); return
                 if templates_only:
                     check_inline_answer_shortcut(page,url,'Meta')
                     check_question_example_shortcuts(page,url,'Meta')
@@ -736,6 +826,7 @@ def run(additional_pdf=None, links_only=False, templates_only=False):
                 check_comments_notepad_and_shortcuts(page,url,'Meta','Mac shortcut checks')
                 check_inline_answer_shortcut(page,url,'Meta')
                 check_question_example_shortcuts(page,url,'Meta')
+                check_notepad_text_formatting(page,context,url,'Meta')
                 linux = browser.new_context(viewport={'width':1512,'height':982})
                 linux.add_init_script("Object.defineProperty(navigator,'platform',{configurable:true,get:()=> 'Linux x86_64'})")
                 linux_page = linux.new_page(); linux_page.goto(url)
@@ -743,6 +834,7 @@ def run(additional_pdf=None, links_only=False, templates_only=False):
                 check_comments_notepad_and_shortcuts(linux_page,url,'Control','Linux shortcut checks')
                 check_inline_answer_shortcut(linux_page,url,'Control')
                 check_question_example_shortcuts(linux_page,url,'Control')
+                check_notepad_text_formatting(linux_page,linux,url,'Control')
                 linux.close()
                 check_notepad_deletion(page,url)
 
@@ -1086,5 +1178,6 @@ if __name__ == '__main__':
     parser.add_argument('--pdf',type=Path,help='Also check import, rendering, and annotations on this PDF.')
     parser.add_argument('--links-only',action='store_true',help='Check passage links in an isolated workspace without the other UI checks.')
     parser.add_argument('--templates-only',action='store_true',help='Check Markdown template shortcuts in every editor on macOS and Linux.')
+    parser.add_argument('--formatting-only',action='store_true',help='Check Notepad text colors, underline, and keyboard shortcuts on macOS and Linux.')
     args = parser.parse_args()
-    run(args.pdf,args.links_only,args.templates_only)
+    run(args.pdf,args.links_only,args.templates_only,args.formatting_only)

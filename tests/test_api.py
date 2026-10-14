@@ -151,6 +151,28 @@ def test_question_example_and_nested_bullets_render_and_persist(client):
     assert 'arbitrary' not in unsafe and 'style=' not in unsafe
 
 
+def test_notepad_text_colors_round_trip_safely_with_markdown(client, app):
+    colors = ['red','orange','yellow','light-green','dark-green','light-blue','dark-blue','purple']
+    source = '\n\n'.join(f'<u><span class="md-text-{color}">**{color}** discovery</span></u>' for color in colors)
+    note = new_note(client)
+    path = f'/api/items/{note["id"]}/notepad'
+    saved = client.patch(path,json={'revision':0,'markdown':source}).json()
+    with TestClient(create_app(app.state.store.directory)) as restarted:
+        assert restarted.get(path).json()['markdown'] == source
+        assert restarted.get(f'/api/items/{note["id"]}/export').json()['notepad'] == saved
+    rendered = client.post('/api/markdown/preview',json={'body':source}).json()['html']
+    for color in colors:
+        assert f'<u><span class="md-text-{color}"><strong>{color}</strong> discovery</span></u>' in rendered
+    converted = client.post('/api/notes/convert',json={'content':rendered})
+    assert converted.status_code == 200
+    for color in colors:
+        assert f'<span class="md-text-{color}">' in converted.json()['markdown']
+    unsafe = client.post('/api/markdown/preview',json={'body':'<span class="md-text-red arbitrary" style="color:red" onclick="alert(1)">Test</span><script>alert(1)</script>'}).json()['html']
+    assert 'arbitrary' not in unsafe and 'style=' not in unsafe and 'onclick=' not in unsafe and '<script' not in unsafe
+    literal = client.post('/api/markdown/preview',json={'body':'```\n'+source+'\n```'}).json()['html']
+    assert '<span class=' not in literal and '&lt;span' in literal
+
+
 @pytest.mark.parametrize('document_kind', ['note', 'pdf'])
 def test_document_notepad_is_independent_persistent_and_synced(client, app, pdf_bytes, document_kind):
     document = new_note(client) if document_kind == 'note' else client.post('/api/import',files={'file':('reading.pdf',pdf_bytes,'application/pdf')}).json()

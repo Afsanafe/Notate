@@ -233,6 +233,40 @@
 #saved-pad-version { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 .md-table-preview { max-width: 100%; }
 
+/* Notepad text colors retain their meaning with readable shades in each theme. */
+:root {
+  --text-color-red: #b52f3d; --text-color-orange: #a4520a; --text-color-yellow: #887000;
+  --text-color-light-green: #4f7c22; --text-color-dark-green: #216245;
+  --text-color-light-blue: #257597; --text-color-dark-blue: #284db2; --text-color-purple: #7b3daa;
+}
+:root[data-theme="dark"] {
+  --text-color-red: #ff8e98; --text-color-orange: #ffb16b; --text-color-yellow: #f1d36b;
+  --text-color-light-green: #b0db79; --text-color-dark-green: #69bc94;
+  --text-color-light-blue: #8cd8f2; --text-color-dark-blue: #91aef9; --text-color-purple: #d3a2ef;
+}
+.md-text-red { --notate-text-ink: var(--text-color-red); }
+.md-text-orange { --notate-text-ink: var(--text-color-orange); }
+.md-text-yellow { --notate-text-ink: var(--text-color-yellow); }
+.md-text-light-green { --notate-text-ink: var(--text-color-light-green); }
+.md-text-dark-green { --notate-text-ink: var(--text-color-dark-green); }
+.md-text-light-blue { --notate-text-ink: var(--text-color-light-blue); }
+.md-text-dark-blue { --notate-text-ink: var(--text-color-dark-blue); }
+.md-text-purple { --notate-text-ink: var(--text-color-purple); }
+:root :is(.markdown-editor,.document-content,.markdown-body) :is(.md-text-red,.md-text-orange,.md-text-yellow,.md-text-light-green,.md-text-dark-green,.md-text-light-blue,.md-text-dark-blue,.md-text-purple),
+:root :is(.markdown-editor,.document-content,.markdown-body) :is(.md-text-red,.md-text-orange,.md-text-yellow,.md-text-light-green,.md-text-dark-green,.md-text-light-blue,.md-text-dark-blue,.md-text-purple) :is(em,strong,a,code,.md-pad-link) { color: var(--notate-text-ink); }
+.markdown-editor .md-underline { text-decoration: underline; text-underline-offset: 3px; }
+.notepad-selection-toolbar { flex-direction: column; align-items: stretch; width: 272px; max-width: calc(100vw - 16px); padding: 8px; gap: 7px; }
+.notepad-selection-actions { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.notepad-selection-actions button { padding: 5px 6px; gap: 5px; font-size: 10px; }
+.notepad-selection-actions button:disabled { opacity: .4; cursor: default; }
+.notepad-selection-actions button[aria-pressed="true"] { background: var(--green-light); }
+.text-color-letter { font-weight: 600; padding: 0 2px; border-bottom: 3px solid var(--notepad-current-color); line-height: 1.3; }
+.notepad-color-palette { display: grid; grid-template-columns: repeat(8,minmax(0,1fr)); gap: 3px; }
+.notepad-color-palette button { justify-content: center; min-width: 0; height: 28px; padding: 4px; border: 1px solid transparent; border-radius: 4px; }
+.notepad-color-palette button span { display: block; width: 16px; height: 16px; border-radius: 50%; }
+.notepad-color-palette button[aria-pressed="true"] { border-color: var(--green); background: var(--green-light); }
+.notepad-color-hint { font-size: 9px; color: var(--muted); padding: 0 3px; }
+
 /* Inline answer shortcut: bold label, italic body text, theme-aware blue. */
 :root { --inline-answer-color: #234f87; }
 :root[data-theme="dark"] { --inline-answer-color: #9fc9f3; }
