@@ -303,6 +303,72 @@ def test_notepad_pages_allocate_concurrently_and_have_independent_revision_check
     assert client.post('/api/items/missing/notepad/pages').status_code == 404
 
 
+def test_organized_notepads_are_paired_independent_persistent_and_backed_up(client, app, tmp_path):
+    note = new_note(client); other = new_note(client); path = f'/api/items/{note["id"]}/notepad'
+    raw = client.patch(path,json={'revision':0,'markdown':'Keep these raw thoughts.'}).json()
+    starter = client.get(path+'?mode=organized').json()
+    assert starter['markdown'] == '# Organized :\n\n' and starter['revision'] == 0
+    client.post(path+'/pages')
+    with client.websocket_connect('/api/events') as socket:
+        socket.receive_json()
+        first = client.patch(path+'?mode=organized',json={'revision':0,'markdown':'# Organized :\n\n**First** findings.'})
+        assert first.status_code == 200 and socket.receive_json()['scope'] == 'notepad'
+    second = client.patch(path+'?page=2&mode=organized',json={'revision':0,'markdown':'# Organized :\n\nSecond findings.'}).json()
+    assert client.get(path).json() == raw
+    assert client.get(path+'?page=2').json()['markdown'] == ''
+    assert client.get(f'/api/items/{other["id"]}/notepad?mode=organized').json()['markdown'] == '# Organized :\n\n'
+    assert client.patch(path+'?mode=organized',json={'revision':0,'markdown':'Stale organized draft'}).status_code == 409
+    assert client.patch(path,json={'revision':raw['revision'],'markdown':'New raw thoughts.'}).status_code == 200
+    assert client.get(path+'?mode=organized').json() == first.json()
+    metadata = client.get(path+'/pages?include_organized=true').json()['pages']
+    assert [page['organized']['revision'] for page in metadata] == [1,1]
+    assert client.get(path+'?page=3&mode=organized').status_code == 404
+    assert client.patch(path+'?page=3&mode=organized',json={'revision':0,'markdown':'Orphan'}).status_code == 404
+    assert client.get(path+'?mode=bad').status_code == 422
+    assert client.patch(path+'?mode=bad',json={'revision':0,'markdown':'Bad mode'}).status_code == 422
+    assert client.get('/api/items/missing/notepad?mode=organized').status_code == 404
+    with TestClient(create_app(app.state.store.directory)) as restarted:
+        assert restarted.get(path+'?page=2&mode=organized').json() == second
+        export = restarted.get(f'/api/items/{note["id"]}/export').json()
+        assert [page['markdown'] for page in export['notepad_organized_pages']] == [first.json()['markdown'],second['markdown']]
+        backup = restarted.get('/api/backup')
+        with zipfile.ZipFile(io.BytesIO(backup.content)) as archive: archive.extractall(tmp_path/'organized-backup')
+    with TestClient(create_app(tmp_path/'organized-backup')) as restored:
+        assert restored.get(path+'?mode=organized').json() == first.json()
+        assert restored.get(path+'?page=2&mode=organized').json() == second
+        assert restored.delete(f'/api/items/{note["id"]}').status_code == 200
+    from notate.storage import Store
+    with Store(tmp_path/'organized-backup').connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM organized_notepad_pages').fetchone()[0] == 0
+    # An intentionally cleared organized page stays empty when reopened.
+    assert client.patch(path+'?page=2&mode=organized',json={'revision':1,'markdown':''}).status_code == 200
+    assert client.get(path+'?page=2&mode=organized').json()['markdown'] == ''
+
+
+def test_organized_notepad_initial_saves_conflict_and_links_find_the_right_version(client):
+    from concurrent.futures import ThreadPoolExecutor
+    note = new_note(client); item_id = note['id']; path = f'/api/items/{item_id}/notepad'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda text: client.patch(path+'?mode=organized',json={'revision':0,'markdown':text}),['First','Second']))
+    assert sorted(response.status_code for response in responses) == [200,409]
+    client.post(path+'/pages')
+    client.patch(path+'?page=2',json={'revision':1,'markdown':'Raw stays here.'})
+    source = '# Organized :\n\nEvidence supports the finding.'
+    client.patch(path+'?page=2&mode=organized',json={'revision':0,'markdown':source})
+    start = source.index('Evidence')
+    linked = client.post(f'/api/items/{item_id}/pad-links',json={'quote':'A good question','anchor':{'type':'text','start':0,'end':15},
+        'revision':1,'page':2,'mode':'organized','selection':{'start':start,'end':start+8,'text':'Evidence'}})
+    assert linked.status_code == 201
+    result = linked.json(); annotation_id = result['annotation']['id']
+    assert client.get(path+f'/links/{annotation_id}').json() == {'page':2,'mode':'organized','notepad':result['notepad']}
+    assert client.get(path+'?page=2').json()['markdown'] == 'Raw stays here.'
+    client.patch(path,json={'revision':0,'markdown':result['notepad']['markdown']})
+    assert client.delete(f'/api/annotations/{annotation_id}').status_code == 200
+    assert client.get(path).json()['markdown'] == source
+    assert client.get(path+'?page=2&mode=organized').json()['markdown'] == source
+    assert client.get(path+f'/links/{annotation_id}').status_code == 404
+
+
 def test_pad_links_follow_their_notepad_page_and_unlink_across_pages(client):
     note = new_note(client); item_id = note['id']; path = f'/api/items/{item_id}/notepad'
     client.patch(path,json={'revision':0,'markdown':'Keep the first page.'})

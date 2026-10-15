@@ -446,12 +446,22 @@ def check_markdown_editor(page, url):
 
 
 def exercise_format_shortcuts(editor, modifier):
-    editor.fill('selected'); editor.press(modifier+'+a'); editor.press(modifier+'+b')
+    editor.fill('selected'); editor.press(modifier+'+a'); editor.press(modifier+'+u')
+    expect(editor.locator('u')).to_have_text('selected')
+    editor.press(modifier+'+u'); expect(editor.locator('u')).to_have_count(0)
+    editor.press(modifier+'+z'); expect(editor.locator('u')).to_have_text('selected')
+    editor.press(modifier+'+u'); expect(editor).to_have_text('selected')
+    editor.press(modifier+'+b')
     expect(editor).to_contain_text('**selected**')
     editor.press(modifier+'+b'); expect(editor).to_have_text('selected')
     editor.press(modifier+'+i'); expect(editor).to_contain_text('*selected*')
     editor.press(modifier+'+i'); expect(editor).to_have_text('selected')
-    editor.fill(''); editor.press(modifier+'+b'); expect(editor).to_contain_text('** **')
+    editor.fill(''); editor.press(modifier+'+u'); expect(editor.locator('u')).to_have_text(' ')
+    editor.press(modifier+'+u'); expect(editor.locator('u')).to_have_count(0)
+    editor.press(modifier+'+u'); editor.page.keyboard.insert_text('underlined')
+    expect(editor.locator('u')).to_have_text('underlined')
+    editor.press(modifier+'+a'); editor.press('Backspace')
+    editor.press(modifier+'+b'); expect(editor).to_contain_text('** **')
     editor.page.keyboard.insert_text('bold'); editor.press('ArrowRight'); editor.press('ArrowRight')
     editor.press_sequentially(' and '); editor.press(modifier+'+i'); editor.page.keyboard.insert_text('italic')
     editor.press('ArrowRight'); editor.press('Enter')
@@ -700,7 +710,7 @@ def check_comments_notepad_and_shortcuts(page, url, modifier, label):
     welcome_id = page.locator('.file-card.active').get_attribute('data-id')
     assert httpx.get(url+f'/api/items/{welcome_id}/notepad').json()['markdown'] == ''
     page.locator('[data-filter="all"]').click()
-    print(f'{modifier} B/I shortcuts work in notes, comments, replies, popups, and Notepad; Notepad saves, syncs, isolates documents, preserves conflicts, and recovers drafts.',flush=True)
+    print(f'{modifier} B/I/U shortcuts work in notes, comments, replies, popups, and Notepad; Notepad saves, syncs, isolates documents, preserves conflicts, and recovers drafts.',flush=True)
 
 
 def check_notepad_text_formatting(page, context, url, modifier):
@@ -1180,7 +1190,97 @@ def check_themes(page, context, url):
     print('Light, Dark, and Warm brown themes: keyboard/menu controls, tan PDF/notes/Notepad, readable colors, cached canvases, annotations, reload, tab sync, and mobile passed.',flush=True)
 
 
-def run(additional_pdf=None, links_only=False, templates_only=False, formatting_only=False, pages_only=False, definitions_only=False, note_tools_only=False, themes_only=False):
+def check_organized_notepads(page, context, url):
+    original_theme = page.locator('html').get_attribute('data-theme')
+    note = page.request.post(url+'/api/notes',data={'title':'Paired Notepad versions','markdown':'A source passage. Another source passage.'}).json()
+    item_id = note['id']; path = f'{url}/api/items/{item_id}/notepad'
+    page.locator(f'.file-card[data-id="{item_id}"]').click(); page.locator('[data-filter="notepad"]').click()
+    editor = page.locator('#notepad-editor .cm-content')
+    def replace(view, source):
+        content = view.locator('#notepad-editor .cm-content'); content.press('ControlOrMeta+a'); view.keyboard.insert_text(source)
+    expect(page.locator('#notepad-raw-view')).to_have_attribute('aria-pressed','true')
+    editor.fill('Raw page one thoughts.')
+    page.evaluate('window.__rawPadEditor = document.querySelector("#notepad-editor .cm-editor")')
+    page.locator('#notepad-organized-view').click()
+    expect(editor.locator('.md-h1')).to_have_text('Organized :')
+    expect(page.locator('#notepad-page-label')).to_have_text('Page 1 of 1')
+    assert page.request.get(path).json()['markdown'] == 'Raw page one thoughts.'
+    assert page.request.get(path+'?mode=organized').json()['markdown'] == '# Organized :\n\n'
+    page.keyboard.insert_text('A clear finding.')
+    expect(editor).to_contain_text('A clear finding.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    page.evaluate('window.__organizedPadEditor = document.querySelector("#notepad-editor .cm-editor")')
+    page.locator('#notepad-raw-view').click(); expect(editor).to_have_text('Raw page one thoughts.')
+    assert page.evaluate('window.__rawPadEditor === document.querySelector("#notepad-editor .cm-editor")')
+    page.locator('#notepad-organized-view').click()
+    assert page.evaluate('window.__organizedPadEditor === document.querySelector("#notepad-editor .cm-editor")')
+    editor.press('ControlOrMeta+End'); page.keyboard.insert_text(' More clarity.')
+    editor.press('ControlOrMeta+z'); expect(editor).not_to_contain_text('More clarity.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    page.locator('#notepad-add-page').click(); expect(page.locator('#notepad-page-label')).to_have_text('Page 2 of 2')
+    expect(page.locator('#notepad-raw-view')).to_have_attribute('aria-pressed','true')
+    editor.fill('Raw page two thoughts.'); page.locator('#notepad-organized-view').click()
+    expect(editor.locator('.md-h1')).to_have_text('Organized :')
+    assert 'A clear finding.' not in editor.inner_text()
+    page.keyboard.insert_text('Second organized finding.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    page.locator('#notepad-previous-page').click()
+    expect(page.locator('#notepad-page-label')).to_have_text('Page 1 of 2'); expect(editor).to_contain_text('A clear finding.')
+    page.locator('#notepad-raw-view').click(); expect(editor).to_have_text('Raw page one thoughts.')
+    page.locator('#notepad-next-page').click(); expect(editor).to_contain_text('Second organized finding.')
+    other = context.new_page(); other.goto(url); other.locator('[data-filter="notepad"]').click()
+    expect(other.locator('#notepad-organized-view')).to_have_attribute('aria-pressed','true')
+    page.locator('#notepad-raw-view').click()
+    replace(other,'# Organized :\n\nUpdated remotely.')
+    expect(other.locator('#notepad-save-state')).to_have_text('Saved locally')
+    expect(editor).to_have_text('Raw page two thoughts.')
+    page.locator('#notepad-organized-view').click(); expect(editor).to_contain_text('Updated remotely.')
+    replace(page,'# Organized :\n\nFirst window organized draft.')
+    replace(other,'# Organized :\n\nSecond window organized draft.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    expect(other.locator('#notepad-save-state')).to_have_text('Review conflicting edits')
+    other.locator('#notepad-save-state').click(); expect(other.locator('#saved-pad-version')).to_contain_text('First window organized draft.')
+    other.locator('#modal-cancel').click(); expect(other.locator('#notepad-editor .cm-content')).to_contain_text('First window organized draft.')
+    other.close(); page.reload(); page.locator('[data-filter="notepad"]').click()
+    expect(page.locator('#notepad-page-label')).to_have_text('Page 2 of 2')
+    expect(page.locator('#notepad-organized-view')).to_have_attribute('aria-pressed','true')
+    expect(editor).to_contain_text('First window organized draft.')
+    saved = page.request.get(path+'?page=2&mode=organized').json()
+    page.evaluate("draft => localStorage.setItem('notate-notepad-draft-'+draft.item_id+'-page-2-organized',JSON.stringify(draft))",
+                  {**saved,'markdown':'# Organized :\n\nRecovered organized draft.'})
+    page.reload(); page.locator('[data-filter="notepad"]').click()
+    expect(editor).to_contain_text('Recovered organized draft.'); expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    assert page.request.get(path+'?page=2').json()['markdown'] == 'Raw page two thoughts.'
+    with page.expect_download() as download: page.locator('#notepad-download').click()
+    assert '-page-2-organized.md' in download.value.suggested_filename
+    assert Path(download.value.path()).read_text() == '# Organized :\n\nRecovered organized draft.'
+    page.locator('#reader').focus(); select_text(page,'#note-content','A source passage.')
+    page.locator('[data-annotate="pad"]').click()
+    expect(page.locator('#notepad-editor .md-pad-link')).to_have_text('A source passage.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    link_id = page.locator('#notepad-editor .md-pad-link').get_attribute('data-passage-link')
+    page.locator('#notepad-previous-page').click(); page.locator('#notepad-raw-view').click()
+    click_mark(page,'pad'); expect(page.locator('#notepad-page-label')).to_have_text('Page 2 of 2')
+    expect(page.locator('#notepad-organized-view')).to_have_attribute('aria-pressed','true')
+    expect(page.locator('#notepad-editor .md-pad-link')).to_have_text('A source passage.')
+    page.locator('[data-filter="all"]').click(); page.locator('.annotation-copy').click()
+    page.wait_for_function("window.__copiedAnnotationText?.includes('Notepad page: 2 (organized)')")
+    page.locator('[data-filter="notepad"]').click()
+    choose_theme(page,'brown'); page.locator('#document-title').click()
+    page.screenshot(path=str(ARTIFACTS/'organized-notepad-brown.png'),full_page=True)
+    assert page.request.delete(f'{url}/api/annotations/{link_id}').status == 200
+    expect(page.locator('#notepad-editor .md-pad-link')).to_have_count(0)
+    exported = page.request.get(f'{url}/api/items/{item_id}/export').json()
+    assert [entry['page'] for entry in exported['notepad_organized_pages']] == [1,2]
+    assert [entry['markdown'] for entry in exported['notepad_pages']] == ['Raw page one thoughts.','Raw page two thoughts.']
+    choose_theme(page,original_theme)
+    page.locator('.file-card').filter(has_text='Welcome to Notate').click(); page.locator('[data-filter="notepad"]').click()
+    page.locator('#notepad-organized-view').click(); expect(editor.locator('.md-h1')).to_have_text('Organized :')
+    page.locator('#notepad-raw-view').click(); page.locator('[data-filter="all"]').click()
+    print('Paired Raw/Organized pages passed: exact starter heading, save-before-switch, separate content/undo, page and document isolation, reload/drafts, sync/conflicts, passage links, copy, downloads, export, and warm theme.',flush=True)
+
+
+def run(additional_pdf=None, links_only=False, templates_only=False, formatting_only=False, pages_only=False, definitions_only=False, note_tools_only=False, themes_only=False, organized_only=False, shortcuts_only=False):
     ARTIFACTS.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='notate-browser-') as temporary:
         with socket.socket() as socket_handle:
@@ -1205,6 +1305,22 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                 page.goto(url); expect(page.locator('#document-title')).to_have_text('Welcome to Notate')
                 expect(page.locator('#connection-label')).to_contain_text('synced')
                 print('Workspace loads and connects to live sync.',flush=True)
+                if shortcuts_only:
+                    check_comments_notepad_and_shortcuts(page,url,'Meta','Mac shortcut checks')
+                    linux = browser.new_context(viewport={'width':1512,'height':982})
+                    linux.add_init_script("Object.defineProperty(navigator,'platform',{configurable:true,get:()=> 'Linux x86_64'})")
+                    linux_page = linux.new_page(); linux_page.goto(url)
+                    check_comments_notepad_and_shortcuts(linux_page,url,'Control','Linux shortcut checks')
+                    linux.close(); assert not errors, errors; assert not outside_requests, outside_requests
+                    browser.close(); return
+                if organized_only:
+                    try: check_organized_notepads(page,context,url)
+                    except BaseException:
+                        print('Organized Notepad browser errors:',errors,flush=True)
+                        page.screenshot(path=str(ARTIFACTS/'organized-notepad-failure.png'),full_page=True)
+                        raise
+                    assert not errors, errors; assert not outside_requests, outside_requests
+                    browser.close(); return
                 if themes_only:
                     try: check_themes(page,context,url)
                     except BaseException:
@@ -1263,6 +1379,7 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                     return
                 check_note_tools(page,context,url)
                 check_themes(page,context,url)
+                check_organized_notepads(page,context,url)
                 check_markdown_editor(page,url)
                 check_comments_notepad_and_shortcuts(page,url,'Meta','Mac shortcut checks')
                 check_inline_answer_shortcut(page,url,'Meta')
@@ -1630,5 +1747,7 @@ if __name__ == '__main__':
     parser.add_argument('--definitions-only',action='store_true',help='Check Notepad definitions and compact page controls.')
     parser.add_argument('--note-tools-only',action='store_true',help='Check note formatting, definitions, hyperlinks, and shared Notepad tools.')
     parser.add_argument('--themes-only',action='store_true',help='Check the theme chooser, Warm brown paper/colors, preferences, and mobile.')
+    parser.add_argument('--organized-only',action='store_true',help='Check the paired raw/organized versions of each Notepad page.')
+    parser.add_argument('--shortcuts-only',action='store_true',help='Check bold, italic, and underline shortcuts in every editor on macOS and Linux.')
     args = parser.parse_args()
-    run(args.pdf,args.links_only,args.templates_only,args.formatting_only,args.pages_only,args.definitions_only,args.note_tools_only,args.themes_only)
+    run(args.pdf,args.links_only,args.templates_only,args.formatting_only,args.pages_only,args.definitions_only,args.note_tools_only,args.themes_only,args.organized_only,args.shortcuts_only)

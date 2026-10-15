@@ -250,7 +250,7 @@ def run():
                 wait_for("document.activeElement === document.querySelector('#notepad-editor .cm-content')")
                 window.evaluate_js("document.querySelector('#notepad-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'a',code:'KeyA',metaKey:true,bubbles:true,cancelable:true}))")
                 wait_for("document.querySelector('#notepad-selection-toolbar').hidden === false && !document.querySelector('#notepad-underline').disabled")
-                window.evaluate_js("document.querySelector('#notepad-underline').click()")
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'u',code:'KeyU',metaKey:true,bubbles:true,cancelable:true}))")
                 wait_for("document.querySelector('#notepad-editor .md-underline')?.textContent === 'Native colored thought.'")
                 window.evaluate_js("document.querySelector('#notepad-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'H',code:'KeyH',metaKey:true,shiftKey:true,bubbles:true,cancelable:true}))")
                 wait_for("document.querySelector('#notepad-editor u .md-text-purple')?.textContent === 'Native colored thought.'")
@@ -294,6 +294,19 @@ def run():
                 wait_for("document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
                 assert 'data-definition="A%20native%20**definition**."' in httpx.get(url+f'/api/items/{template_id}/notepad?page=2').json()['markdown']
                 results['notepad_definitions'] = 'passed'
+                wait_for("!document.querySelector('#notepad-organized-view').disabled")
+                window.evaluate_js("document.querySelector('#notepad-organized-view').click()")
+                wait_for("document.querySelector('#notepad-organized-view').getAttribute('aria-pressed') === 'true' && document.querySelector('#notepad-editor .md-h1')?.textContent === 'Organized :'")
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').focus(); document.execCommand('insertText',false,'Native organized finding.')")
+                wait_for("document.querySelector('#notepad-editor .cm-content').textContent.includes('Native organized finding.') && document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
+                assert httpx.get(url+f'/api/items/{template_id}/notepad?page=2&mode=organized').json()['markdown'] == '# Organized :\n\nNative organized finding.'
+                window.evaluate_js("document.querySelector('#notepad-raw-view').click()")
+                wait_for("document.querySelector('#notepad-raw-view').getAttribute('aria-pressed') === 'true' && document.querySelector('#notepad-editor .md-definition')?.textContent === 'Native second page.'")
+                wait_for("!document.querySelector('#notepad-organized-view').disabled")
+                window.evaluate_js("document.querySelector('#notepad-organized-view').click()")
+                wait_for("document.querySelector('#notepad-editor .cm-content').textContent.includes('Native organized finding.')")
+                assert window.evaluate_js("document.querySelector('#notepad-page-label').textContent") == 'Page 2 of 2'
+                results['organized_notepads'] = 'passed'
                 window.evaluate_js("document.querySelector('#theme-toggle').click(); document.querySelector('[data-theme-choice=brown]').click()")
                 wait_for("document.documentElement.dataset.theme === 'brown'")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-editor')).backgroundColor") == 'rgb(239, 219, 187)'

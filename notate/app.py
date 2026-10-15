@@ -132,6 +132,7 @@ class PadLinkInput(BaseModel):
     anchor: dict
     revision: int = Field(ge=0)
     page: int = Field(default=1, ge=1)
+    mode: Literal['raw','organized'] = 'raw'
     selection: PadSelection | None = None
 
 
@@ -361,17 +362,17 @@ def create_app(data_dir: str | Path, token: str | None = None):
         return public_item(item_or_404(item_id))
 
     @app.get('/api/items/{item_id}/notepad')
-    def get_notepad(item_id: str, page: int = Query(default=1,ge=1)):
+    def get_notepad(item_id: str, page: int = Query(default=1,ge=1), mode: Literal['raw','organized'] = 'raw'):
         item_or_404(item_id)
         with store.connect() as db:
             if page > 1 and not store.notepad_row(db,item_id,page):
                 raise HTTPException(404,'This Notepad page no longer exists.')
-        return store.notepad(item_id,page)
+        return store.notepad(item_id,page,mode)
 
     @app.get('/api/items/{item_id}/notepad/pages')
-    def list_notepad_pages(item_id: str):
+    def list_notepad_pages(item_id: str, include_organized: bool = False):
         item_or_404(item_id)
-        return {'pages':store.notepad_page_list(item_id)}
+        return {'pages':store.notepad_page_list(item_id,include_organized=include_organized)}
 
     @app.post('/api/items/{item_id}/notepad/pages',status_code=201)
     async def add_notepad_page(item_id: str, request: Request):
@@ -392,23 +393,23 @@ def create_app(data_dir: str | Path, token: str | None = None):
         row = store.find_notepad_link(item_id,annotation_id)
         if not row:
             raise HTTPException(404,'The linked Notepad text was removed. The original reading passage is still marked.')
-        record = dict(row); page = record.pop('page')
-        return {'page':page,'notepad':record}
+        record = dict(row); page = record.pop('page'); mode = record.pop('mode')
+        return {'page':page,'notepad':record,**({'mode':mode} if mode == 'organized' else {})}
 
     @app.patch('/api/items/{item_id}/notepad')
-    async def update_notepad(item_id: str, body: NotepadUpdate, request: Request, page: int = Query(default=1,ge=1)):
+    async def update_notepad(item_id: str, body: NotepadUpdate, request: Request, page: int = Query(default=1,ge=1), mode: Literal['raw','organized'] = 'raw'):
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT id FROM items WHERE id=?', (item_id,)).fetchone():
                 raise HTTPException(404, 'This document no longer exists. Your notepad draft can be downloaded or saved as a new note.')
-            current = store.notepad_row(db,item_id,page)
-            if page > 1 and not current:
+            current = store.notepad_row(db,item_id,page,mode)
+            if page > 1 and not store.notepad_row(db,item_id,page):
                 raise HTTPException(404,'This Notepad page no longer exists. Your draft can be downloaded or saved as a new note.')
             if (current['revision'] if current else 0) != body.revision:
                 raise HTTPException(409, 'This notepad changed in another window. Review the saved version before replacing it.')
             record = {'item_id': item_id, 'markdown': body.markdown,
                       'revision': body.revision + 1, 'updated_at': timestamp()}
-            store.write_notepad(db,record,page)
+            store.write_notepad(db,record,page,mode)
         await hub.publish(request, 'notepad', item_id)
         return record
 
@@ -479,10 +480,10 @@ def create_app(data_dir: str | Path, token: str | None = None):
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT id FROM items WHERE id=?', (item_id,)).fetchone():
                 raise HTTPException(404, 'This document no longer exists.')
-            pad = store.notepad_row(db,item_id,body.page)
-            if body.page > 1 and not pad:
+            pad = store.notepad_row(db,item_id,body.page,body.mode)
+            if body.page > 1 and not store.notepad_row(db,item_id,body.page):
                 raise HTTPException(404,'This Notepad page no longer exists.')
-            source, revision = (pad['markdown'], pad['revision']) if pad else ('', 0)
+            source, revision = (pad['markdown'], pad['revision']) if pad else ('# Organized :\n\n' if body.mode == 'organized' else '', 0)
             if revision != body.revision:
                 raise HTTPException(409, 'This notepad changed in another window. Review the saved version before linking.')
             if body.selection:
@@ -507,7 +508,7 @@ def create_app(data_dir: str | Path, token: str | None = None):
             if len(markdown) > 5_000_000:
                 raise HTTPException(422, 'The notepad is full. Shorten it before adding a link.')
             record = {'item_id': item_id, 'markdown': markdown, 'revision': revision + 1, 'updated_at': now}
-            store.write_notepad(db,record,body.page)
+            store.write_notepad(db,record,body.page,body.mode)
             db.execute('INSERT INTO annotations VALUES (?,?,?,?,?,?,?,?)',
                        (annotation_id, item_id, 'pad', 'orange', body.quote, json.dumps(body.anchor), 0, now))
         await hub.publish(request, 'notepad', item_id)
@@ -567,15 +568,16 @@ def create_app(data_dir: str | Path, token: str | None = None):
             db.execute('BEGIN IMMEDIATE')
             annotation = annotation_or_404(db, annotation_id)
             if annotation['kind'] == 'pad':
-                pages = db.execute('''SELECT 1 AS page,item_id,markdown,revision,updated_at FROM notepads WHERE item_id=?
-                    UNION ALL SELECT page_number AS page,item_id,markdown,revision,updated_at FROM notepad_pages WHERE item_id=?''',
-                    (annotation['item_id'],annotation['item_id'])).fetchall()
+                pages = db.execute('''SELECT 1 AS page,'raw' AS mode,item_id,markdown,revision,updated_at FROM notepads WHERE item_id=?
+                    UNION ALL SELECT page_number AS page,'raw' AS mode,item_id,markdown,revision,updated_at FROM notepad_pages WHERE item_id=?
+                    UNION ALL SELECT page_number AS page,'organized' AS mode,item_id,markdown,revision,updated_at FROM organized_notepad_pages WHERE item_id=?''',
+                    (annotation['item_id'],annotation['item_id'],annotation['item_id'])).fetchall()
                 for pad in pages:
                     # Remove the link's Markdown wrapper while keeping its text.
                     markdown = unlink_pad_text(pad['markdown'], annotation_id)
                     if markdown != pad['markdown']:
                         store.write_notepad(db,{'item_id':annotation['item_id'],'markdown':markdown,
-                            'revision':pad['revision']+1,'updated_at':timestamp()},pad['page'])
+                            'revision':pad['revision']+1,'updated_at':timestamp()},pad['page'],pad['mode'])
                         pad_changed = True
             db.execute("DELETE FROM annotations WHERE id=?", (annotation_id,))
         if pad_changed:
@@ -614,7 +616,8 @@ def create_app(data_dir: str | Path, token: str | None = None):
     def export_item(item_id: str):
         item = public_item(item_or_404(item_id))
         return JSONResponse({"document": item, "annotations": store.annotations(item_id), "notepad": store.notepad(item_id),
-                             'notepad_pages':store.notepad_page_list(item_id,include_content=True)},
+                             'notepad_pages':store.notepad_page_list(item_id,include_content=True),
+                             'notepad_organized_pages':store.organized_notepad_page_list(item_id)},
                             headers={"Content-Disposition": 'attachment; filename="notate-annotations.json"'})
 
     @app.get("/api/backup")

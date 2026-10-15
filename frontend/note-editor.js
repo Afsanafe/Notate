@@ -400,6 +400,7 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     Prec.high(keymap.of([
       {key: 'Mod-b', run: () => { format('bold'); return true; }},
       {key: 'Mod-i', run: () => { format('italic'); return true; }},
+      {key: 'Mod-u', run: () => { format('underline'); return true; }},
       {key: 'Mod-e', run: () => { insertAnswer(); return true; }},
       {key: 'Mod-Shift-m', run: () => { insertTemplate('question'); return true; }},
       {key: 'Mod-Shift-e', run: () => { insertTemplate('example'); return true; }},
@@ -414,22 +415,26 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     })
   ]})});
   if (!preview) view.dispatch({effects: changePreview.of(false)});
-  function wrap(marker) {
+  function wrap(opening, closing = opening) {
     const {from, to} = view.state.selection.main, selected = view.state.doc.sliceString(from, to);
     const text = selected || ' ';
-    const surrounding = view.state.doc.sliceString(Math.max(0, from - marker.length), to + marker.length);
-    if (selected && surrounding === marker + selected + marker) {
-      view.dispatch({changes: {from: from - marker.length, to: to + marker.length, insert: selected},
-        selection: EditorSelection.single(from - marker.length, to - marker.length), userEvent: 'input', annotations:isolateHistory.of('full')});
+    const surrounding = view.state.doc.sliceString(Math.max(0, from - opening.length), to + closing.length);
+    if (selected && surrounding === opening + selected + closing) {
+      view.dispatch({changes: {from: from - opening.length, to: to + closing.length, insert: selected},
+        selection: EditorSelection.single(from - opening.length, to - opening.length), userEvent: 'input', annotations:isolateHistory.of('full')});
     } else {
-      view.dispatch({changes: {from, to, insert: marker + text + marker},
-        selection: EditorSelection.single(from + marker.length, from + marker.length + text.length), userEvent: 'input', annotations:isolateHistory.of('full')});
+      view.dispatch({changes: {from, to, insert: opening + text + closing},
+        selection: EditorSelection.single(from + opening.length, from + opening.length + text.length), userEvent: 'input', annotations:isolateHistory.of('full')});
     }
     view.focus();
   }
   function format(kind) {
     if (view.state.readOnly) return;
-    if (kind === 'underline') return styleSelection('Underline','<u>','</u>');
+    if (kind === 'underline') {
+      const {from,to,empty} = view.state.selection.main;
+      if (empty || /^[\t ]+$/.test(view.state.doc.sliceString(from,to))) return wrap('<u>','</u>');
+      return styleSelection('Underline','<u>','</u>');
+    }
     if (kind === 'bold' || kind === 'italic') return wrap(kind === 'bold' ? '**' : '*');
     const {from, to} = view.state.selection.main;
     const first = view.state.doc.lineAt(from), last = view.state.doc.lineAt(to);

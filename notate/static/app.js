@@ -1,4 +1,4 @@
-import {createNoteEditor, getSourcePassageLinks, getSourceDefinitions, renderEditorMarkdown, TEXT_COLORS} from './vendor/note-editor.js?v=da3be2f236d39a9a';
+import {createNoteEditor, getSourcePassageLinks, getSourceDefinitions, renderEditorMarkdown, TEXT_COLORS} from './vendor/note-editor.js?v=b03ac9c681bb2126';
 
 const $ = (query, root = document) => root.querySelector(query);
 const $$ = (query, root = document) => [...root.querySelectorAll(query)];
@@ -344,7 +344,10 @@ function showDocumentMenu(anchor) {
     await api(`/api/items/${item.id}`,{method:'DELETE'});
     if (state.notepad?.saving) await state.notepad.saving;
     writeLocal(`notate-draft-${item.id}`,null); writeLocal(`notate-notepad-page-${item.id}`,null);
-    for (const page of state.notepadPageList.length ? state.notepadPageList : [{page:1}]) writeLocal(notepadDraftKey(item.id,page.page),null);
+    for (const page of state.notepadPageList.length ? state.notepadPageList : [{page:1}]) {
+      for (const mode of ['raw','organized']) writeLocal(notepadDraftKey(item.id,page.page,mode),null);
+      writeLocal(`notate-notepad-mode-${item.id}-${page.page}`,null);
+    }
     for (const record of state.annotations) { state.replyDrafts.delete(record.id); state.popupDrafts.delete(record.id); }
     state.dirty = false; state.conflict = false; clearTimeout(state.saveTimer); resetReader(); state.active = null;
     await refreshWorkspace(); if (state.items.length) await openItem(state.items[0].id); else renderEmpty(); toast('Document deleted.');
@@ -519,9 +522,10 @@ async function saveNote() {
 }
 async function flushNote() { clearTimeout(state.saveTimer); await saveNote(); if (state.dirty) { toast(state.conflict ? 'Review the conflicting edits before leaving this note.' : 'Your note is still unsaved. Keep this window open or reconnect the server.',true); return false; } return flushNotepad(); }
 
-function notepadDraftKey(id,page=1) { return `notate-notepad-draft-${id}${page > 1 ? `-page-${page}` : ''}`; }
-function notepadEndpoint(pad) { return `/api/items/${pad.item_id}/notepad?page=${pad.pageNumber}`; }
-function keepNotepadDraft(pad) { writeLocal(notepadDraftKey(pad.item_id,pad.pageNumber),{markdown:pad.markdown,revision:pad.revision}); }
+function notepadDraftKey(id,page=1,mode='raw') { return `notate-notepad-draft-${id}${page > 1 ? `-page-${page}` : ''}${mode === 'organized' ? '-organized' : ''}`; }
+function notepadPageKey(page,mode='raw') { return mode === 'organized' ? `${page}:organized` : page; }
+function notepadEndpoint(pad) { return `/api/items/${pad.item_id}/notepad?page=${pad.pageNumber}&mode=${pad.mode || 'raw'}`; }
+function keepNotepadDraft(pad) { writeLocal(notepadDraftKey(pad.item_id,pad.pageNumber,pad.mode),{markdown:pad.markdown,revision:pad.revision}); }
 function updateNotepadPages() {
   const pad = state.notepad, page = pad?.pageNumber || 1, total = state.notepadPageList.length || 1;
   const busy = !pad || state.notepadPageBusy || state.linkingPad;
@@ -529,11 +533,15 @@ function updateNotepadPages() {
   $('#notepad-previous-page').disabled = busy || page <= 1;
   $('#notepad-next-page').disabled = busy || page >= total;
   $('#notepad-add-page').disabled = busy;
-  $('#notepad-download').title = `Download Notepad page ${page} as Markdown`;
+  for (const button of $$('[data-notepad-mode]')) {
+    button.disabled = busy; button.setAttribute('aria-pressed',button.dataset.notepadMode === (pad?.mode || 'raw'));
+    button.title = `${button.dataset.notepadMode === 'organized' ? 'Organized' : 'Raw'} notes for page ${page}`;
+  }
+  $('#notepad-download').title = `Download ${pad?.mode === 'organized' ? 'organized ' : ''}Notepad page ${page} as Markdown`;
 }
 function updateNotepadPageMetadata(pad) {
   const metadata = state.notepadPageList.find(entry => entry.page === pad.pageNumber);
-  if (metadata) Object.assign(metadata,{revision:pad.revision,updated_at:pad.updated_at});
+  if (metadata) Object.assign(pad.mode === 'organized' ? (metadata.organized ||= {}) : metadata,{revision:pad.revision,updated_at:pad.updated_at});
 }
 function updateNotepadState() {
   const pad = state.notepad, button = $('#notepad-save-state'), notice = $('#notepad-notice');
@@ -544,13 +552,13 @@ function updateNotepadState() {
   notice.textContent = pad.conflict ? 'Your draft is safe. Review the saved version before replacing it.' : pad.error || '';
   notice.hidden = !notice.textContent;
 }
-function makeNotepadPage(saved,pageNumber) {
-  const pad = {...saved,pageNumber,dirty:false,conflict:false,saving:null,timer:null,error:'',sourceMode:false,scrollTop:0,editor:null};
-  const key = notepadDraftKey(pad.item_id,pageNumber), draft = readLocal(key,null);
+function makeNotepadPage(saved,pageNumber,mode='raw') {
+  const pad = {...saved,pageNumber,mode,dirty:false,conflict:false,saving:null,timer:null,error:'',sourceMode:false,scrollTop:0,editor:null};
+  const key = notepadDraftKey(pad.item_id,pageNumber,mode), draft = readLocal(key,null);
   if (draft && typeof draft.markdown === 'string' && draft.markdown !== saved.markdown) {
     pad.markdown = draft.markdown; pad.revision = draft.revision; pad.dirty = true;
     pad.conflict = draft.revision !== saved.revision;
-    toast(`Your unsaved draft for Notepad page ${pageNumber} has been restored.`);
+    toast(`Your unsaved ${mode === 'organized' ? 'organized ' : ''}draft for Notepad page ${pageNumber} has been restored.`);
   } else writeLocal(key,null);
   return pad;
 }
@@ -562,11 +570,12 @@ function mountNotepadPage(pad) {
     notepadEditor.view.dom.remove();
   }
   state.notepad = pad;
+  const creating = !pad.editor;
   if (!pad.editor) pad.editor = createNoteEditor($('#notepad-editor'),pad.markdown,source => {
     pad.markdown = source; pad.dirty = true; keepNotepadDraft(pad);
     if (state.notepad === pad) updateNotepadState();
     clearTimeout(pad.timer); if (!pad.conflict) pad.timer = setTimeout(() => saveNotepad(pad),650);
-  },!pad.sourceMode,{ariaLabel:'Document notepad Markdown editor',placeholder:'Capture your thoughts about this document… Use # for a heading.',
+  },!pad.sourceMode,{ariaLabel:pad.mode === 'organized' ? `Organized Notepad page ${pad.pageNumber} Markdown editor` : 'Document notepad Markdown editor',placeholder:'Capture your thoughts about this document… Use # for a heading.',
     onPassageLink: jumpToLinkedPassage, onApplyTextColor: () => applyEditorTextColor('notepad'),
     onDefinition: (definition,rect,label) => { if (state.notepad === pad) openDefinition(editorContext('notepad'),definition,rect,label); },
     onSelectionChange: (selection,update) => {
@@ -583,35 +592,40 @@ function mountNotepadPage(pad) {
       schedulePadSelectionTools();
     }});
   else $('#notepad-editor').append(pad.editor.view.dom);
+  if (creating && pad.mode === 'organized' && !pad.dirty && pad.revision === 0 && pad.markdown === '# Organized :\n\n') pad.editor.view.dispatch({selection:{anchor:pad.markdown.length}});
   notepadEditor = pad.editor;
   notepadEditor.view.requestMeasure();
   requestAnimationFrame(() => { if (state.notepad === pad) notepadEditor.view.scrollDOM.scrollTop = pad.scrollTop; });
   $('#notepad-source').setAttribute('aria-pressed',pad.sourceMode);
   $('#notepad-source').title = pad.sourceMode ? 'Show live Markdown formatting' : 'Show Markdown source';
   writeLocal(`notate-notepad-page-${pad.item_id}`,pad.pageNumber);
+  writeLocal(`notate-notepad-mode-${pad.item_id}-${pad.pageNumber}`,pad.mode);
   updateNotepadState();
   if (pad.dirty && !pad.conflict) pad.timer = setTimeout(() => saveNotepad(pad),650);
 }
-async function ensureNotepad(pageNumber = null) {
+async function ensureNotepad(pageNumber = null,mode = null) {
   $('#notepad-context').textContent = $('#notepad-context').title = state.active?.title || 'Open a document to start a notepad.';
   if (!state.active) return false;
-  if (state.notepad && (pageNumber === null || state.notepad.pageNumber === pageNumber)) return true;
-  if (state.notepadLoading) { await state.notepadLoading; return ensureNotepad(pageNumber); }
+  if (state.notepad && (pageNumber === null || state.notepad.pageNumber === pageNumber) && (mode === null || state.notepad.mode === mode)) return true;
+  if (state.notepadLoading) { await state.notepadLoading; return ensureNotepad(pageNumber,mode); }
   const id = state.active.id; $('#notepad-save-state').textContent = 'Opening…';
   $('#notepad-notice').hidden = true;
   const request = (async () => {
     if (!state.notepadPageList.length) {
-      const result = await api(`/api/items/${id}/notepad/pages`);
+      const result = await api(`/api/items/${id}/notepad/pages?include_organized=true`);
       if (state.active?.id !== id) return false;
       state.notepadPageList = result.pages;
     }
     const preferred = pageNumber ?? readLocal(`notate-notepad-page-${id}`,1);
     const number = state.notepadPageList.some(entry => entry.page === preferred) ? preferred : 1;
-    let pad = state.notepadPages.get(number);
+    const choice = mode ?? readLocal(`notate-notepad-mode-${id}-${number}`,'raw'), view = choice === 'organized' ? 'organized' : 'raw';
+    const key = notepadPageKey(number,view);
+    let pad = state.notepadPages.get(key);
     if (!pad) {
-      const saved = await api(`/api/items/${id}/notepad?page=${number}`);
+      if (view === 'organized' && !state.notepadPageList.find(entry => entry.page === number)?.organized) throw new Error('Restart the Notate server and reload to enable organized notes.');
+      const saved = await api(notepadEndpoint({item_id:id,pageNumber:number,mode:view}));
       if (state.active?.id !== id) return false;
-      pad = makeNotepadPage(saved,number); state.notepadPages.set(number,pad);
+      pad = makeNotepadPage(saved,number,view); state.notepadPages.set(key,pad);
     }
     mountNotepadPage(pad); return true;
   })(); state.notepadLoading = request;
@@ -625,8 +639,8 @@ async function ensureNotepad(pageNumber = null) {
     return false;
   } finally { if (state.notepadLoading === request) state.notepadLoading = null; }
 }
-async function switchNotepadPage(number,create = false) {
-  if (!state.notepad || state.notepadPageBusy || state.linkingPad || !create && number === state.notepad.pageNumber) return false;
+async function switchNotepadPage(number,create = false,mode = null) {
+  if (!state.notepad || state.notepadPageBusy || state.linkingPad || !create && number === state.notepad.pageNumber && (mode === null || mode === state.notepad.mode)) return false;
   const pad = state.notepad, id = pad.item_id; state.notepadPageBusy = true;
   closeDefinition();
   cancelPadLink(); pad.editor.setReadOnly(true); updateNotepadState();
@@ -636,17 +650,17 @@ async function switchNotepadPage(number,create = false) {
     if (create) {
       const added = await api(`/api/items/${id}/notepad/pages`,{method:'POST'});
       if (state.active?.id !== id) return false;
-      const list = await api(`/api/items/${id}/notepad/pages`);
+      const list = await api(`/api/items/${id}/notepad/pages?include_organized=true`);
       if (state.active?.id !== id) return false;
-      state.notepadPageList = list.pages; number = added.page;
+      state.notepadPageList = list.pages; number = added.page; mode = 'raw';
       state.notepadPages.set(number,makeNotepadPage(added.notepad,number));
     }
     if (!state.notepadPageList.some(entry => entry.page === number)) return false;
-    const opened = await ensureNotepad(number);
+    const opened = await ensureNotepad(number,mode);
     if (opened && state.active?.id === id) notepadEditor.focus();
     return opened;
   } finally {
-    if (state.notepadPages.get(pad.pageNumber) === pad) pad.editor.setReadOnly(false);
+    if (state.notepadPages.get(notepadPageKey(pad.pageNumber,pad.mode)) === pad) pad.editor.setReadOnly(false);
     if (state.active?.id === id) { state.notepadPageBusy = false; updateNotepadState(); }
   }
 }
@@ -659,8 +673,8 @@ async function saveNotepad(pad = state.notepad) {
     try {
       const saved = await api(notepadEndpoint(pad),{method:'PATCH',body:{markdown:source,revision}});
       pad.revision = saved.revision; pad.updated_at = saved.updated_at; pad.dirty = pad.markdown !== source || pad.conflict; pad.error = '';
-      pad.dirty ? keepNotepadDraft(pad) : writeLocal(notepadDraftKey(pad.item_id,pad.pageNumber),null);
-      if (state.notepadPages.get(pad.pageNumber) === pad) updateNotepadPageMetadata(pad);
+      pad.dirty ? keepNotepadDraft(pad) : writeLocal(notepadDraftKey(pad.item_id,pad.pageNumber,pad.mode),null);
+      if (state.notepadPages.get(notepadPageKey(pad.pageNumber,pad.mode)) === pad) updateNotepadPageMetadata(pad);
       return true;
     } catch (error) {
       if (error.status === 409 || error.status === 404) pad.conflict = true;
@@ -677,18 +691,19 @@ async function flushNotepad() {
 }
 async function synchronizeNotepad() {
   const pad = state.notepad; if (!pad) return;
-  const id = pad.item_id, list = await api(`/api/items/${id}/notepad/pages`);
+  const id = pad.item_id, list = await api(`/api/items/${id}/notepad/pages?include_organized=true`);
   if (state.active?.id !== id) return;
   state.notepadPageList = list.pages;
-  for (const metadata of list.pages) {
-    const cached = state.notepadPages.get(metadata.page);
-    if (!cached) continue;
+  for (const cached of state.notepadPages.values()) {
+    const page = list.pages.find(entry => entry.page === cached.pageNumber);
+    const metadata = cached.mode === 'organized' ? page?.organized : page;
+    if (!metadata) continue;
     if (cached.saving) await cached.saving;
     if (state.active?.id !== id) return;
     if (metadata.revision <= cached.revision) continue;
     if (cached.dirty) { cached.conflict = true; continue; }
     const latest = await api(notepadEndpoint(cached));
-    if (state.active?.id !== id || state.notepadPages.get(metadata.page) !== cached) return;
+    if (state.active?.id !== id || state.notepadPages.get(notepadPageKey(cached.pageNumber,cached.mode)) !== cached) return;
     if (cached.dirty || cached.saving) cached.conflict = true;
     else {
       if (state.notepad === cached) cancelPadLink();
@@ -895,7 +910,7 @@ async function createPadLink() {
     const pad = state.notepad, source = pad.markdown;
     lockedEditor = notepadEditor; lockedEditor.setReadOnly(true);
     const result = await api(`/api/items/${id}/pad-links`,{method:'POST',body:{quote:selected.quote,anchor:selected.anchor,revision:pad.revision,
-      page:pad.pageNumber,
+      page:pad.pageNumber,mode:pad.mode,
       selection:pending ? {start:pending.start,end:pending.end,text:pending.text} : null}});
     await refreshWorkspace().catch(() => {});
     if (state.active?.id !== id || state.notepad !== pad) return;
@@ -904,7 +919,7 @@ async function createPadLink() {
       pad.conflict = true; pad.error = 'Your passage link was saved. Review the saved Notepad to keep your newer typing.';
       keepNotepadDraft(pad); updateNotepadState();
     } else {
-      Object.assign(pad,result.notepad,{dirty:false,conflict:false,error:''}); writeLocal(notepadDraftKey(id,pad.pageNumber),null);
+      Object.assign(pad,result.notepad,{dirty:false,conflict:false,error:''}); writeLocal(notepadDraftKey(id,pad.pageNumber,pad.mode),null);
       updateNotepadPageMetadata(pad);
       notepadEditor.setSource(pad.markdown); updateNotepadState();
     }
@@ -926,18 +941,19 @@ async function jumpToNotepad(id) {
   if (!notepadEditor?.getPassageLinks().some(link => link.id === id)) {
     try {
       const found = await api(`/api/items/${itemId}/notepad/links/${id}`);
+      const mode = found.mode || 'raw', key = notepadPageKey(found.page,mode);
       if (state.active?.id !== itemId) return;
       if (!state.notepadPageList.some(entry => entry.page === found.page)) {
-        const list = await api(`/api/items/${itemId}/notepad/pages`);
+        const list = await api(`/api/items/${itemId}/notepad/pages?include_organized=true`);
         if (state.active?.id !== itemId) return;
         state.notepadPageList = list.pages;
       }
-      const cached = state.notepadPages.get(found.page);
-      if (!cached) state.notepadPages.set(found.page,makeNotepadPage(found.notepad,found.page));
+      const cached = state.notepadPages.get(key);
+      if (!cached) state.notepadPages.set(key,makeNotepadPage(found.notepad,found.page,mode));
       else if (!cached.dirty && !cached.saving && found.notepad.revision > cached.revision) {
         Object.assign(cached,found.notepad); cached.editor?.setSource(cached.markdown); updateNotepadPageMetadata(cached);
       }
-      if (found.page !== state.notepad?.pageNumber && !await switchNotepadPage(found.page)) return;
+      if ((found.page !== state.notepad?.pageNumber || mode !== state.notepad?.mode) && !await switchNotepadPage(found.page,false,mode)) return;
     } catch (error) { if (error.status === 404) { toast(error.message,true); return; } throw error; }
   }
   if (state.active?.id !== itemId) return;
@@ -955,7 +971,8 @@ function jumpToLinkedPassage(id) {
 function downloadNotepad() {
   if (!state.notepad) return;
   const pageSuffix = state.notepadPageList.length > 1 ? `-page-${state.notepad.pageNumber}` : '';
-  downloadBlob(new Blob([state.notepad.markdown],{type:'text/markdown;charset=utf-8'}),`${state.active.title.replace(/[^a-z\d -]/gi,'').slice(0,80) || 'document'}-notepad${pageSuffix}.md`);
+  const modeSuffix = state.notepad.mode === 'organized' ? '-organized' : '';
+  downloadBlob(new Blob([state.notepad.markdown],{type:'text/markdown;charset=utf-8'}),`${state.active.title.replace(/[^a-z\d -]/gi,'').slice(0,80) || 'document'}-notepad${pageSuffix}${modeSuffix}.md`);
 }
 async function reviewNotepadConflict() {
   const pad = state.notepad; if (!pad) return;
@@ -966,7 +983,7 @@ async function reviewNotepadConflict() {
     modal('Keep your notepad', '<p>This document was deleted in another window. Save your notepad as a new note or download the draft.</p><label for="recovered-pad-title">Note title</label><input id="recovered-pad-title" name="title" required maxlength="250"><button type="button" id="download-pad-draft" class="button subtle">Download draft</button>', 'Save as new note',async data => {
       if (state.dirty) throw new Error('Recover your main note draft first. You can download this notepad while reviewing it.');
       const saved = await api('/api/notes',{method:'POST',body:{title:data.get('title'),markdown:pad.markdown}});
-      pad.dirty = false; pad.conflict = false; writeLocal(notepadDraftKey(pad.item_id,pad.pageNumber),null);
+      pad.dirty = false; pad.conflict = false; writeLocal(notepadDraftKey(pad.item_id,pad.pageNumber,pad.mode),null);
       await refreshWorkspace(); await openItem(saved.id,true);
     });
     $('#recovered-pad-title').value = `${state.active.title} — Notepad`.slice(0,250); $('#download-pad-draft').onclick = downloadNotepad; return;
@@ -977,7 +994,7 @@ async function reviewNotepadConflict() {
   },{cancelText:'Load saved version',onCancel:action(async () => {
     const current = await api(notepadEndpoint(pad));
     if (state.notepad !== pad) return;
-    Object.assign(pad,current,{dirty:false,conflict:false,error:''}); writeLocal(notepadDraftKey(pad.item_id,pad.pageNumber),null);
+    Object.assign(pad,current,{dirty:false,conflict:false,error:''}); writeLocal(notepadDraftKey(pad.item_id,pad.pageNumber,pad.mode),null);
     updateNotepadPageMetadata(pad);
     notepadEditor.setSource(pad.markdown); updateNotepadState(); $('#modal').close();
   })});
@@ -999,8 +1016,8 @@ async function reviewConflict() {
       const folder = state.folders.some(folder => folder.id === state.active.folder_id) ? state.active.folder_id : null;
       const recovered = await api('/api/notes',{method:'POST',body:{title:data.get('title'),folder_id:folder,markdown:draft}});
       if (state.notepad?.item_id === oldId) {
-        if (state.notepad.markdown) await api(`/api/items/${recovered.id}/notepad`,{method:'PATCH',body:{revision:0,markdown:state.notepad.markdown}});
-        state.notepad.dirty = false; state.notepad.conflict = false; writeLocal(notepadDraftKey(oldId,state.notepad.pageNumber),null);
+        if (state.notepad.markdown) await api(`/api/items/${recovered.id}/notepad?mode=${state.notepad.mode}`,{method:'PATCH',body:{revision:0,markdown:state.notepad.markdown}});
+        state.notepad.dirty = false; state.notepad.conflict = false; writeLocal(notepadDraftKey(oldId,state.notepad.pageNumber,state.notepad.mode),null);
       }
       state.dirty = false; state.conflict = false; writeLocal(`notate-draft-${oldId}`,null); await refreshWorkspace(); await openItem(recovered.id,true);
     });
@@ -1530,7 +1547,7 @@ function annotationClipboardText(record, item = state.active, linked = null) {
   source.push('','## Highlighted source text','',quoteBlock(record.quote));
   if (record.kind === 'pad') {
     const link = linked || notepadEditor?.getPassageLinks().find(link => link.id === record.id);
-    if (link) source.push('',`Notepad page: ${linked?.page || state.notepad.pageNumber}`);
+    if (link) source.push('',`Notepad page: ${linked?.page || state.notepad.pageNumber}${linked?.mode === 'organized' ? ' (organized)' : ''}`);
     source.push('','## Linked Notepad text','',link ? quoteBlock(link.text) : 'Open Notepad to view the associated text.');
   }
   source.push('','## My comments, questions, and answers (chronological)');
@@ -1566,13 +1583,13 @@ async function copyAnnotation(record, button) {
       const pages = [state.notepad,...state.notepadPages.values()].filter(Boolean);
       for (const pad of pages) {
         const match = pad.editor?.getPassageLinks().find(link => link.id === record.id);
-        if (match) { linked = {...match,page:pad.pageNumber}; break; }
+        if (match) { linked = {...match,page:pad.pageNumber,mode:pad.mode}; break; }
       }
       if (!linked) {
         try {
           const located = await api(`/api/items/${item.id}/notepad/links/${record.id}`);
           const match = getSourcePassageLinks(located.notepad.markdown).find(link => link.id === record.id);
-          if (match) linked = {...match,page:located.page};
+          if (match) linked = {...match,page:located.page,mode:located.mode || 'raw'};
         } catch (error) { if (error.status !== 404) throw error; }
       }
     }
@@ -1856,6 +1873,7 @@ $('#notepad-save-state').onclick = action(async () => state.notepad?.conflict ? 
 $('#notepad-previous-page').onclick = action(() => switchNotepadPage(state.notepad.pageNumber-1));
 $('#notepad-next-page').onclick = action(() => switchNotepadPage(state.notepad.pageNumber+1));
 $('#notepad-add-page').onclick = action(() => switchNotepadPage(null,true));
+$$('[data-notepad-mode]').forEach(button => { button.onclick = action(() => switchNotepadPage(state.notepad.pageNumber,false,button.dataset.notepadMode)); });
 $('#notepad-download').onclick = downloadNotepad;
 $('#notepad-link').onmousedown = $('#link-pad-selection').onmousedown = event => event.preventDefault();
 $('#notepad-link').onclick = action(beginPadLink);

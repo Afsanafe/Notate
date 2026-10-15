@@ -237,6 +237,10 @@
 .notepad-page-label { min-width: 56px; text-align: center; color: var(--muted); font-size: 9px; line-height: 1.5; white-space: nowrap; }
 @media (pointer: coarse) { .notepad-page-nav .icon-button { width: 34px; height: 28px; } }
 .notepad-toolbar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 5px; border: 1px solid var(--line); border-radius: 4px; }
+.notepad-view-switch { display: flex; gap: 3px; align-self: flex-start; padding: 2px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); }
+.notepad-view-switch button { padding: 4px 12px; border-radius: 3px; font-size: 10px; color: var(--soft-ink); }
+.notepad-view-switch button[aria-pressed="true"] { background: var(--green-light); color: var(--ink); font-weight: 600; }
+.notepad-view-switch button:disabled { opacity: .45; cursor: default; }
 .notepad-toolbar button { width: 24px; height: 24px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 10px; }
 .notepad-toolbar svg { width: 13px; height: 13px; }
 .notepad-toolbar #notepad-source { font-size: 8px; }
