@@ -13,6 +13,8 @@ const paths = {
   archive:'<path d="M4 8h16v12H4zM3 3h18v5H3zM9 12h6"/>',
   home:'<path d="m3 10 9-7 9 7M5 9v12h14V9M9 21v-7h6v7"/>',
   panel:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16M18 8h1M18 12h1"/>',
+  expand:'<path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"/>',
+  shrink:'<path d="M3 8h5V3M21 8h-5V3M16 21v-5h5M8 21v-5H3"/>',
   more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   book:'<path d="M12 5v16M3 4c4-1 7 0 9 2 2-2 5-3 9-2v15c-4-1-7 0-9 2-2-2-5-3-9-2Z"/>',
   left:'<path d="m14 6-6 6 6 6"/>', right:'<path d="m9 6 6 6-6 6"/>',
@@ -67,6 +69,7 @@ let definitionEditor = null;
 const layout = {
   navigationCollapsed: readLocal('notate-navigation-collapsed', false) === true,
   notesWidth: readLocal('notate-notes-width', null),
+  fullscreen: false,
   drag: null, resizeTimer: null
 };
 if (!Number.isFinite(layout.notesWidth)) layout.notesWidth = null;
@@ -93,7 +96,7 @@ function toast(message, error = false) {
 function updateNavigationLayout() {
   const shell = $('.app-shell'); const sidebar = $('#sidebar'); const mobile = innerWidth <= 640;
   shell.classList.toggle('nav-collapsed', layout.navigationCollapsed);
-  const visible = mobile ? sidebar.classList.contains('open') : !layout.navigationCollapsed;
+  const visible = !layout.fullscreen && (mobile ? sidebar.classList.contains('open') : !layout.navigationCollapsed);
   sidebar.inert = !visible; sidebar.setAttribute('aria-hidden', !visible);
   const toggle = $('#sidebar-toggle'); const collapse = $('#sidebar-collapse');
   toggle.setAttribute('aria-expanded', visible);
@@ -116,6 +119,19 @@ function revealNavigation() {
   if (innerWidth <= 640) $('#sidebar').classList.add('open');
   updateNavigationLayout();
 }
+function setWorkspaceFullscreen(fullscreen) {
+  finishPaneResize();
+  layout.fullscreen = fullscreen;
+  $('.app-shell').classList.toggle('workspace-fullscreen', fullscreen);
+  closeNavigationDrawer();
+  const button = $('#toggle-workspace-fullscreen');
+  button.innerHTML = icon(fullscreen ? 'shrink' : 'expand');
+  button.setAttribute('aria-pressed', fullscreen);
+  button.title = button.ariaLabel = fullscreen ? 'Exit full screen (Escape)' : 'Full screen';
+  $('#reader-toggle-annotations').hidden = !fullscreen;
+  button.focus({preventScroll: true});
+  updatePaneWidth(); scheduleReaderLayout(true);
+}
 function paneWidthLimits() {
   return {min: 240, max: Math.max(240, Math.min(720, $('#reading-workspace').clientWidth - 360 - 8))};
 }
@@ -128,6 +144,12 @@ function updatePaneWidth() {
   divider.setAttribute('aria-valuetext', `${width} pixels for Notes & discoveries`);
   const available = innerWidth > 860 && !workspace.classList.contains('panel-hidden');
   divider.tabIndex = available ? 0 : -1; divider.setAttribute('aria-hidden', !available);
+  const panelVisible = innerWidth <= 860 ? workspace.classList.contains('panel-mobile-open') : !workspace.classList.contains('panel-hidden');
+  for (const id of ['toggle-annotations', 'reader-toggle-annotations']) {
+    const button = $(`#${id}`);
+    button.setAttribute('aria-expanded', panelVisible);
+    button.title = button.ariaLabel = `${panelVisible ? 'Hide' : 'Show'} Notes & discoveries`;
+  }
   schedulePopupPosition();
   return width;
 }
@@ -1601,13 +1623,20 @@ $('#file-input').onchange = action(async event => { const files = [...event.targ
 $('#search').oninput = event => { state.query = event.target.value; renderNavigation(); };
 $$('.nav-button').forEach(button => { button.onclick = () => chooseView(button.dataset.view); });
 $('#document-menu').onclick = event => showDocumentMenu(event.currentTarget);
-$('#toggle-annotations').onclick = () => {
+$('#toggle-workspace-fullscreen').onclick = () => setWorkspaceFullscreen(!layout.fullscreen);
+function toggleAnnotations() {
   const workspace = $('#reading-workspace');
   if (innerWidth <= 860) workspace.classList.toggle('panel-mobile-open');
   else workspace.classList.toggle('panel-hidden');
   updatePaneWidth(); scheduleReaderLayout(true);
+}
+$('#toggle-annotations').onclick = toggleAnnotations;
+$('#reader-toggle-annotations').onclick = toggleAnnotations;
+$('#close-annotations').onclick = () => {
+  $('#reading-workspace').classList.add('panel-hidden'); $('#reading-workspace').classList.remove('panel-mobile-open');
+  $(layout.fullscreen ? '#reader-toggle-annotations' : '#toggle-annotations').focus({preventScroll: true});
+  updatePaneWidth(); scheduleReaderLayout(true);
 };
-$('#close-annotations').onclick = () => { $('#reading-workspace').classList.add('panel-hidden'); $('#reading-workspace').classList.remove('panel-mobile-open'); updatePaneWidth(); scheduleReaderLayout(true); };
 $$('[data-filter]').forEach(button => { button.onclick = () => { state.filter = button.dataset.filter; renderAnnotations(); }; });
 $('#sidebar-toggle').onclick = () => {
   if (innerWidth > 640) setNavigationCollapsed(!layout.navigationCollapsed);
@@ -1742,9 +1771,14 @@ document.addEventListener('pointerdown',event => {
   if (!event.target.closest('#annotation-popover,#reader,#toggle-popups,#theme-toggle,.annotation-quote')) closeAnnotationPopover();
 });
 document.addEventListener('keydown',event => {
-  if (event.key === 'Escape') { closeNotepadDefinition(); cancelPadLink(); hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; closeNavigationDrawer(); finishPaneResize(); }
+  if (event.key === 'Escape') {
+    const dismissing = event.defaultPrevented || $('#modal').open || state.pendingPadLink || layout.drag ||
+      $$('#notepad-definition-popover,#notepad-selection-toolbar,#selection-toolbar,#annotation-popover,#comment-popover,#floating-menu').some(node => !node.hidden);
+    closeNotepadDefinition(); hidePadSelectionTools(); cancelPadLink(); hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; closeNavigationDrawer(); finishPaneResize();
+    if (layout.fullscreen && !dismissing) setWorkspaceFullscreen(false);
+  }
   if (!(event.metaKey || event.ctrlKey)) return;
-  if (event.key.toLowerCase() === 'k') { event.preventDefault(); ($('#sidebar').inert ? $('#sidebar-toggle') : $('#search')).focus(); }
+  if (event.key.toLowerCase() === 'k') { event.preventDefault(); if (layout.fullscreen) setWorkspaceFullscreen(false); ($('#sidebar').inert ? $('#sidebar-toggle') : $('#search')).focus(); }
   if (event.key.toLowerCase() === 's') { event.preventDefault(); saveNote(); saveNotepad(); }
   if (event.key.toLowerCase() === 'n' && !$('#modal').open) { event.preventDefault(); newNoteDialog(); }
 });

@@ -324,6 +324,9 @@
 :is(.document-content, .markdown-body, .md-table-preview) ul.md-list-square { list-style-type: square; }
 
 /* Workspace layout: button-controlled navigation and a resizable split. */
+.workspace-fullscreen > .sidebar, .workspace-fullscreen .main > :is(.topbar, .document-heading) { display: none; }
+.workspace-fullscreen .reading-workspace { margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+.reader-window-tools { display: flex; align-items: center; gap: 3px; }
 .sidebar-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 31px; gap: 8px; }
 .sidebar-heading .brand { margin: 0 0 0 9px; }
 #sidebar-toggle, #sidebar-collapse { flex-shrink: 0; }
@@ -343,6 +346,7 @@ body.resizing-panels, body.resizing-panels * { cursor: col-resize !important; us
 }
 @media (max-width: 860px) {
   .panel-resizer { display: none; }
+  .workspace-fullscreen .annotations-panel { top: 60px; }
 }
 @container reading-pane (max-width: 480px) {
   .reader-toolbar { padding: 0 9px; gap: 5px; }
