@@ -277,6 +277,18 @@
 .notepad-color-palette button[aria-pressed="true"] { border-color: var(--green); background: var(--green-light); }
 .notepad-color-hint { font-size: 9px; color: var(--muted); padding: 0 3px; }
 
+/* Notes share Notepad formatting; their web links use an indigo highlight. */
+:root { --note-link-ink: #5145a6; --note-link-bg: #635bce1c; }
+:root[data-theme="dark"] { --note-link-ink: #c0b3ff; --note-link-bg: #9b89ef2b; }
+#format-toolbar { flex-wrap: wrap; flex-shrink: 0; }
+#format-toolbar > button { flex-shrink: 0; }
+:root :is(#note-editor .md-hyperlink, .markdown-note .document-content a[href]) {
+  color: var(--note-link-ink); background: var(--note-link-bg); text-decoration: underline;
+  text-decoration-color: var(--note-link-ink); text-underline-offset: 3px; border-radius: 3px;
+  box-decoration-break: clone; -webkit-box-decoration-break: clone; cursor: pointer;
+}
+#note-editor .md-hyperlink:focus-visible { outline: 2px solid var(--note-link-ink); outline-offset: 2px; }
+
 /* Definitions stay with the word; their compact popup is dark in both themes. */
 .md-definition { font-weight: 700; background: #30463d24; border-radius: 3px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .md-definition[data-definition-from] { cursor: help; }

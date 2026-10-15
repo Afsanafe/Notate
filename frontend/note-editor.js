@@ -77,6 +77,30 @@ renderer.renderer.rules.image = (tokens, index) => renderer.utils.escapeHtml(tok
 const changePreview = StateEffect.define();
 const passageLinkHandler = Facet.define({combine: values => values[0]});
 const definitionHandler = Facet.define({combine: values => values[0]});
+const hyperlinkHandler = Facet.define({combine: values => values[0]});
+function safeHyperlink(value) {
+  try {
+    const url = new URL(value);
+    return ['http:','https:','mailto:'].includes(url.protocol) ? url.href : null;
+  } catch { return null; }
+}
+function hyperlinkNode(state,node) {
+  if (node.name !== 'Link' || passageLink(state,node)) return null;
+  const children = [];
+  for (let child = node.node.firstChild; child; child = child.nextSibling) children.push(child);
+  const closing = children.find(child => child.name === 'LinkMark' && state.doc.sliceString(child.from,child.to) === ']');
+  const destination = children.find(child => child.name === 'URL');
+  if (!closing || !destination) return null;
+  const url = safeHyperlink(state.doc.sliceString(destination.from,destination.to).replace(/^<|>$/g,''));
+  return url ? {from:node.from,to:node.to,start:node.from+1,end:closing.from,url,
+    text:state.doc.sliceString(node.from+1,closing.from),source:state.doc.sliceString(node.from,node.to),existing:true} : null;
+}
+function activateHyperlink(view,event,keyboard = false) {
+  const marked = event.target.closest?.('[data-hyperlink]'), handler = view.state.facet(hyperlinkHandler);
+  if (!marked || !handler || !keyboard && !(event.metaKey || event.ctrlKey)) return false;
+  const url = safeHyperlink(marked.dataset.hyperlink); if (!url) return false;
+  event.preventDefault(); handler(url); return true;
+}
 function definitionNode(state,node) {
   if (node.name !== 'DefinedText') return null;
   const first = node.node.firstChild, last = node.node.lastChild;
@@ -110,6 +134,9 @@ function passageLinks(state) {
 }
 export function getSourcePassageLinks(source) {
   return passageLinks(EditorState.create({doc:source,extensions:markdown({extensions:[Table,Strikethrough,textFormatting]})}));
+}
+export function getSourceDefinitions(source) {
+  return definitions(EditorState.create({doc:source,extensions:markdown({extensions:[Table,Strikethrough,textFormatting]})}));
 }
 function activatePassageLink(view, event) {
   const link = event.target.closest?.('[data-passage-link]'); const handler = view.state.facet(passageLinkHandler);
@@ -178,7 +205,16 @@ class TablePreview extends WidgetType {
     });
     container.querySelectorAll('a').forEach(link => {
       const match = /^#notate-passage-([a-f0-9]{32})$/.exec(link.getAttribute('href'));
-      if (!match) return;
+      if (!match) {
+        const url = safeHyperlink(link.getAttribute('href'));
+        if (url && view.state.facet(hyperlinkHandler)) {
+          link.dataset.hyperlink = url; link.classList.add('md-hyperlink'); link.tabIndex = 0;
+          link.title = '⌘/Ctrl-click to open hyperlink';
+          link.addEventListener('click',event => event.preventDefault());
+          link.addEventListener('keydown',event => { if (event.key === 'Enter') activateHyperlink(view,event,true); });
+        }
+        return;
+      }
       link.classList.add('md-pad-link'); link.dataset.passageLink = match[1];
       link.title = 'Jump to reading passage · ⌘/Ctrl-click to edit';
       link.addEventListener('click', event => { event.preventDefault(); });
@@ -190,6 +226,7 @@ class TablePreview extends WidgetType {
       cell.addEventListener('pointerdown', event => {
         if (activateDefinition(view,event)) return;
         if (activatePassageLink(view,event)) return;
+        if (activateHyperlink(view,event)) return;
         event.preventDefault();
         const target = this.cells[index];
         const linked = event.target.closest('[data-passage-link]');
@@ -229,6 +266,11 @@ function liveDecorations(state) {
     if (passage) {
       mark(passage.start,passage.end,'md-pad-link',null,{'data-passage-link':passage.id,role:'link',tabindex:'0',title:'Jump to reading passage · ⌘/Ctrl-click to edit'});
       if (preview) { hide(from,passage.start); hide(passage.end,to); }
+    }
+    const hyperlink = state.facet(hyperlinkHandler) && hyperlinkNode(state,node);
+    if (hyperlink) {
+      mark(hyperlink.start,hyperlink.end,'md-hyperlink',null,{'data-hyperlink':hyperlink.url,role:'link',tabindex:'0',title:'⌘/Ctrl-click to open hyperlink'});
+      if (preview) { hide(from,hyperlink.start); hide(hyperlink.end,to); }
     }
     const definition = definitionNode(state,node);
     if (definition) {
@@ -309,7 +351,7 @@ function liveDecorations(state) {
     else if (name === 'InlineCode') mark(from, to, 'md-inline-code', 'code');
     else if (name === 'EmphasisMark' || name === 'StrikethroughMark' || name === 'CodeMark') hide(from, to);
     else if (name === 'Escape') hide(from, from + 1);
-    else if (name === 'Link' && !passage) {
+    else if (name === 'Link' && !passage && !hyperlink) {
       const match = /^\[([\s\S]*?)\]\([\s\S]*\)$/.exec(state.doc.sliceString(from, to));
       if (match) { hide(from, from + 1); mark(from + 1, from + 1 + match[1].length, 'md-link'); hide(from + 1 + match[1].length, to); }
     }
@@ -339,9 +381,10 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     previewEnabled, livePreview,
     passageLinkHandler.of(options.onPassageLink),
     definitionHandler.of(options.onDefinition),
+    hyperlinkHandler.of(options.onHyperlink),
     EditorView.domEventHandlers({
-      pointerdown: (event, editor) => event.button === 0 && (activateDefinition(editor,event) || activatePassageLink(editor,event)),
-      keydown: (event, editor) => (event.key === 'Enter' || event.key === ' ') && (activateDefinition(editor,event,true) || activatePassageLink(editor,event))
+      pointerdown: (event, editor) => event.button === 0 && (activateDefinition(editor,event) || activatePassageLink(editor,event) || activateHyperlink(editor,event)),
+      keydown: (event, editor) => (event.key === 'Enter' || event.key === ' ') && (activateDefinition(editor,event,true) || activatePassageLink(editor,event) || activateHyperlink(editor,event,true))
     }),
     // Some platforms report shifted letters in lowercase, and synthetic
     // native events may omit keyCode. Handle Shift before letter fallback.
@@ -530,10 +573,46 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     view.dispatch({changes,selection:view.state.selection.map(changes),userEvent:'input',annotations:isolateHistory.of('full')});
     view.focus(); return true;
   }
+  function hyperlinkTarget() {
+    const {from,to} = view.state.selection.main;
+    let existing = null;
+    syntaxTree(view.state).iterate({from,to,enter(node) {
+      const link = hyperlinkNode(view.state,node);
+      if (link && link.from <= from && link.to >= to) existing = link;
+    }});
+    if (existing) return existing;
+    if (!selectionCanLink()) return null;
+    const text = view.state.doc.sliceString(from,to);
+    return {from,to,text,source:text,existing:false};
+  }
+  function changeHyperlink(target,url = null) {
+    if (view.state.readOnly || !target || view.state.doc.sliceString(target.from,target.to) !== target.source) return false;
+    const safe = url === null ? null : safeHyperlink(url);
+    if (url !== null && !safe) return false;
+    const label = target.existing ? target.text : target.text.replace(/\\[\[\]]|[\[\]]/g, value => value.length === 1 ? '\\'+value : value);
+    const destination = safe?.replace(/[()\\<>]/g, value => '%'+value.charCodeAt(0).toString(16).toUpperCase());
+    const insert = safe ? `[${label}](${destination})` : target.text;
+    const start = target.from + (safe ? 1 : 0);
+    view.dispatch({changes:{from:target.from,to:target.to,insert},selection:EditorSelection.single(start,start+(safe ? label.length : target.text.length)),
+      userEvent:'input',annotations:isolateHistory.of('full')});
+    view.focus(); return true;
+  }
+  function selectionCanLink() {
+    const {from,to,empty} = view.state.selection.main;
+    if (view.state.readOnly || empty || !view.state.doc.sliceString(from,to).trim() || /\n\s*\n/.test(view.state.doc.sliceString(from,to))) return false;
+    let allowed = true;
+    syntaxTree(view.state).iterate({from,to,enter(node) {
+      if (['Link','Image','InlineCode','FencedCode','CodeBlock'].includes(node.name) && node.from < to && node.to > from) allowed = false;
+    }});
+    return allowed;
+  }
   return {
     view, format, insertAnswer, insertTemplate,
     selectionCanDefine, getSelectedDefinition: selectedDefinition, setDefinition, removeDefinition,
     getDefinitions: () => definitions(view.state),
+    getHyperlinkTarget: hyperlinkTarget,
+    setHyperlink: (url,target) => changeHyperlink(target,url),
+    removeHyperlink: target => changeHyperlink(target),
     selectionCanFormat,
     selectionIsUnderlined: () => !!selectionFormatNode('Underline'),
     applyTextColor: color => TEXT_COLORS.includes(color) && styleSelection('TextColor',`<span class="md-text-${color}">`,'</span>'),
@@ -545,15 +624,7 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
       view.dispatch({selection: EditorSelection.single(link.start,link.end), effects: EditorView.scrollIntoView(link.start,{y:'center'}), annotations: Transaction.addToHistory.of(false)});
       view.focus(); return true;
     },
-    selectionCanLink() {
-      const {from,to,empty} = view.state.selection.main;
-      if (empty || !view.state.doc.sliceString(from,to).trim() || /\n\s*\n/.test(view.state.doc.sliceString(from,to))) return false;
-      let allowed = true;
-      syntaxTree(view.state).iterate({from,to,enter(node) {
-        if (['Link','Image','InlineCode','FencedCode','CodeBlock'].includes(node.name) && node.from < to && node.to > from) allowed = false;
-      }});
-      return allowed;
-    },
+    selectionCanLink,
     setSource(value) {
       if (value === view.state.doc.toString()) return;
       suppressChange = true;

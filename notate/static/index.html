@@ -50,7 +50,17 @@
               </div>
             </div>
           </div>
-          <div id="format-toolbar" class="format-toolbar" hidden><button data-format="bold" title="Bold (⌘/Ctrl B)" aria-label="Bold"><b>B</b></button><button data-format="italic" title="Italic (⌘/Ctrl I)" aria-label="Italic"><i>I</i></button><button data-format="heading" title="Heading" aria-label="Heading">H2</button><span class="toolbar-separator"></span><button data-format="list" title="Bullet list" aria-label="Bullet list"><span data-icon="list"></span></button><button data-format="quote" title="Quote" aria-label="Quote"><span data-icon="quote"></span></button><button data-format="paragraph" title="Paragraph" aria-label="Paragraph">¶</button><span class="toolbar-separator"></span><button id="insert-table" class="table-toolbar-button" title="Insert table" aria-label="Insert table"><span data-icon="table"></span><span>Table</span></button><button id="markdown-preview-toggle" class="markdown-preview-toggle" aria-pressed="true" title="Show raw Markdown source">Live preview</button><span class="editor-hint">Markdown · format on the next line</span></div>
+          <div id="format-toolbar" class="format-toolbar" role="toolbar" aria-label="Note formatting" hidden>
+            <button data-format="bold" title="Bold (⌘/Ctrl B)" aria-label="Bold"><b>B</b></button><button data-format="italic" title="Italic (⌘/Ctrl I)" aria-label="Italic"><i>I</i></button><button data-format="underline" title="Underline" aria-label="Underline"><u>U</u></button><button data-format="heading" title="Heading" aria-label="Heading">H2</button>
+            <span class="toolbar-separator"></span>
+            <button data-format="list" title="Bullet list" aria-label="Bullet list"><span data-icon="list"></span></button><button data-format="quote" title="Quote" aria-label="Quote"><span data-icon="quote"></span></button><button data-format="paragraph" title="Paragraph" aria-label="Paragraph">¶</button>
+            <button id="insert-table" class="table-toolbar-button" title="Insert table" aria-label="Insert table"><span data-icon="table"></span><span>Table</span></button>
+            <button id="note-color-toggle" class="notepad-color-control" aria-label="Text color" aria-controls="notepad-selection-toolbar" aria-expanded="false" title="Text color"><span class="text-color-letter" aria-hidden="true">A</span></button>
+            <button id="note-define" aria-label="Define selected note text" title="Define selected text" disabled><span data-icon="book"></span></button>
+            <button id="note-hyperlink" aria-label="Add or edit hyperlink" title="Select text to add a hyperlink" disabled><span data-icon="link"></span></button>
+            <button id="markdown-preview-toggle" class="markdown-preview-toggle" aria-pressed="true" title="Show raw Markdown source">Live preview</button><button id="note-download" title="Download note as Markdown" aria-label="Download note"><span data-icon="download"></span></button>
+            <span class="editor-hint">Markdown · format on the next line</span>
+          </div>
           <div id="pad-link-banner" class="pad-link-banner" role="status" hidden><span>Link <strong id="pad-link-target"></strong>: select its source in Reading view, then choose <b>Link to pad</b>.</span><button id="cancel-pad-link" class="button subtle">Cancel</button></div>
           <div id="reader" class="reader" tabindex="-1"><div class="loading"><span class="spinner"></span>Opening your workspace…</div></div>
           <div class="reader-footer"><span><span data-icon="mouse"></span><span id="reader-hint">Select text to highlight, underline, strike, or comment</span></span><span class="local-label"><span data-icon="lock"></span>Local first. Yours always.</span></div>

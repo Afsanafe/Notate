@@ -842,6 +842,105 @@ def check_notepad_definitions(page, context, url):
     print('Compact page controls and definitions passed: Cmd/Ctrl-click, Markdown, themes, edit/remove, undo, tables, safe rendering, reload, pages, and live sync.',flush=True)
 
 
+def check_note_tools(page, context, url):
+    original_theme = page.locator('html').get_attribute('data-theme')
+    page.locator('#new-note').click(); page.locator('#note-title').fill('Note formatting tools'); page.locator('#modal-submit').click()
+    editor = page.locator('#note-editor .cm-content')
+    editor.fill('Evidence supports a discovery. Read the source.')
+    expect(page.locator('#save-state')).to_have_text('Saved locally')
+    item_id = page.locator('.file-card.active').get_attribute('data-id')
+    page.locator('[data-filter="notepad"]').click()
+    pad = page.locator('#notepad-editor .cm-content'); pad.fill('Separate Notepad text.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    toolbar = page.locator('#notepad-selection-toolbar')
+    def select_word(word):
+        editor.focus()
+        editor.evaluate('''(container, word) => {
+          const walker = document.createTreeWalker(container,NodeFilter.SHOW_TEXT);
+          let node; while (node = walker.nextNode()) {
+            const start = node.textContent.indexOf(word); if (start < 0) continue;
+            const range = document.createRange(); range.setStart(node,start); range.setEnd(node,start+word.length);
+            getSelection().removeAllRanges(); getSelection().addRange(range); return;
+          } throw new Error('Word missing: '+word);
+        }''',word)
+        expect(toolbar).to_be_visible()
+        expect(toolbar).to_have_attribute('aria-label','Format selected note text')
+    for color in ['red','orange','yellow','light-green','dark-green','light-blue','dark-blue','purple']:
+        select_word('Evidence'); page.locator(f'[data-notepad-color="{color}"]').click()
+        expect(editor.locator(f'.md-text-{color}')).to_have_text('Evidence')
+    select_word('Evidence'); page.locator('#notepad-underline').click()
+    expect(editor.locator('u')).to_have_text('Evidence')
+    editor.press('ControlOrMeta+z'); expect(editor.locator('u')).to_have_count(0)
+    editor.press('ControlOrMeta+Shift+z'); expect(editor.locator('u')).to_have_text('Evidence')
+    select_word('discovery'); editor.press('ControlOrMeta+Shift+h')
+    expect(editor.locator('.md-text-purple').last).to_have_text('discovery')
+    select_word('Evidence'); page.locator('#notepad-define').click()
+    popup = page.locator('#notepad-definition-popover')
+    expect(popup).to_be_visible()
+    page.locator('#notepad-definition-editor .cm-content').fill('Facts supporting a **finding**.')
+    page.locator('#notepad-definition-save').click(); expect(popup).to_be_hidden()
+    mark = editor.locator('.md-definition'); expect(mark).to_have_text('Evidence')
+    mark.click(modifiers=['Meta']); expect(page.locator('#notepad-definition-display strong')).to_have_text('finding')
+    page.keyboard.press('Escape')
+    select_word('Read the source'); expect(page.locator('#link-pad-selection')).to_have_attribute('aria-label','Add hyperlink to selected text')
+    page.locator('#link-pad-selection').click()
+    page.locator('#note-link-url').fill('javascript:alert(1)'); page.locator('#modal-submit').click()
+    expect(page.locator('.modal-error')).to_be_visible(); expect(editor.locator('.md-hyperlink')).to_have_count(0)
+    page.locator('#note-link-url').fill('https://example.com/research?topic=notes&a=1'); page.locator('#modal-submit').click()
+    expect(page.locator('#modal')).not_to_be_visible()
+    link = editor.locator('.md-hyperlink'); expect(link).to_have_text('Read the source')
+    assert 'https://' not in editor.inner_text(), 'Live preview should show the linked words.'
+    page.evaluate("() => { window.__noteOpenedLinks=[]; window.open=(...args)=>window.__noteOpenedLinks.push(args); }")
+    link.click(modifiers=['Control'])
+    opened = page.evaluate('window.__noteOpenedLinks[0][0]')
+    assert opened == 'https://example.com/research?topic=notes&a=1', (opened,page.evaluate('window.__noteOpenedLinks'),link.get_attribute('data-hyperlink'))
+    select_word('Read the source'); page.locator('#note-hyperlink').click()
+    expect(page.locator('#modal-title')).to_have_text('Edit hyperlink')
+    page.locator('#note-link-url').fill('https://example.com/a(b)'); page.locator('#modal-submit').click()
+    expect(link).to_have_attribute('data-hyperlink','https://example.com/a%28b%29')
+    select_word('Read the source'); page.locator('#note-hyperlink').click(); page.locator('#note-link-remove').click()
+    expect(link).to_have_count(0); expect(editor).to_contain_text('Read the source')
+    editor.press('ControlOrMeta+z'); expect(link).to_have_text('Read the source')
+    expect(page.locator('#save-state')).to_have_text('Saved locally')
+    with page.expect_download() as download:
+        page.locator('#note-download').click()
+    exported = Path(download.value.path()).read_text()
+    assert 'md-text-purple' in exported and 'data-definition=' in exported and 'https://example.com/a%28b%29' in exported
+    assert page.request.get(f'{url}/api/items/{item_id}/notepad').json()['markdown'] == 'Separate Notepad text.'
+    page.locator('#read-mode').click()
+    reading_link = page.locator('#note-content a'); expect(reading_link).to_have_text('Read the source')
+    expect(reading_link).to_have_attribute('target','_blank')
+    reading_mark = page.locator('#note-content .md-definition')
+    reading_mark.click(modifiers=['Control']); expect(page.locator('#notepad-definition-display strong')).to_have_text('finding')
+    page.locator('#notepad-definition-edit').click()
+    expect(editor).to_be_visible(); page.locator('#notepad-definition-editor .cm-content').fill('A revised note definition.')
+    page.locator('#notepad-definition-save').click(); expect(popup).to_be_hidden()
+    expect(page.locator('#save-state')).to_have_text('Saved locally')
+    other = context.new_page(); other.goto(url)
+    expect(other.locator('#note-content .md-definition')).to_have_text('Evidence')
+    other.locator('#note-content .md-definition').click(modifiers=['Meta'])
+    expect(other.locator('#notepad-definition-display')).to_have_text('A revised note definition.')
+    other.keyboard.press('Escape'); other.close()
+    page.locator('#read-mode').click(); page.reload()
+    expect(reading_link).to_have_text('Read the source')
+    for theme in ['light','dark']:
+        if page.locator('html').get_attribute('data-theme') != theme: page.locator('#theme-toggle').click()
+        assert reading_link.evaluate('(node)=>getComputedStyle(node).backgroundColor') != 'rgba(0, 0, 0, 0)'
+        page.locator('#edit-mode').click(); expect(link).to_have_text('Read the source')
+        assert link.evaluate('(node)=>getComputedStyle(node).color') == reading_link.evaluate('(node)=>getComputedStyle(node).color')
+        page.screenshot(path=str(ARTIFACTS/f'note-tools-{theme}.png'),full_page=True)
+        page.locator('#read-mode').click()
+    page.locator('#edit-mode').click(); page.locator('#toggle-workspace-fullscreen').click()
+    page.set_viewport_size({'width':390,'height':844})
+    assert page.evaluate('document.documentElement.scrollWidth') == 390
+    expect(page.locator('#note-hyperlink')).to_be_in_viewport()
+    expect(page.locator('#note-color-toggle')).to_be_in_viewport()
+    page.locator('#toggle-workspace-fullscreen').click(); page.set_viewport_size({'width':1512,'height':982})
+    if page.locator('html').get_attribute('data-theme') != original_theme: page.locator('#theme-toggle').click()
+    page.locator('.file-card').filter(has_text='Welcome to Notate').click()
+    print('Note tools passed: eight colors, underline, shortcut, definitions in Edit/Read, safe indigo hyperlinks, edit/remove, undo, export, persistence, sync, mobile, and independent Notepad content.',flush=True)
+
+
 def check_notepad_pages(page, context, url):
     title = 'Numbered Notepad pages'
     note = page.request.post(url+'/api/notes',data={'title':title,'markdown':'A source for page one. A source for page two.'}).json()
@@ -968,7 +1067,7 @@ def check_notepad_deletion(page, url):
     print('Deliberate document deletion clears its notepad; remote deletion preserves drafts and can recover them as a new note.',flush=True)
 
 
-def run(additional_pdf=None, links_only=False, templates_only=False, formatting_only=False, pages_only=False, definitions_only=False):
+def run(additional_pdf=None, links_only=False, templates_only=False, formatting_only=False, pages_only=False, definitions_only=False, note_tools_only=False):
     ARTIFACTS.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='notate-browser-') as temporary:
         with socket.socket() as socket_handle:
@@ -993,6 +1092,15 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                 page.goto(url); expect(page.locator('#document-title')).to_have_text('Welcome to Notate')
                 expect(page.locator('#connection-label')).to_contain_text('synced')
                 print('Workspace loads and connects to live sync.',flush=True)
+                if note_tools_only:
+                    try: check_note_tools(page,context,url)
+                    except BaseException:
+                        print('Note browser errors:',errors,flush=True)
+                        page.screenshot(path=str(ARTIFACTS/'note-tools-failure.png'),full_page=True)
+                        raise
+                    check_notepad_definitions(page,context,url)
+                    assert not errors, errors; assert not outside_requests, outside_requests
+                    browser.close(); return
                 if definitions_only:
                     try: check_notepad_definitions(page,context,url)
                     except BaseException:
@@ -1031,6 +1139,7 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                     assert not outside_requests, outside_requests
                     browser.close()
                     return
+                check_note_tools(page,context,url)
                 check_markdown_editor(page,url)
                 check_comments_notepad_and_shortcuts(page,url,'Meta','Mac shortcut checks')
                 check_inline_answer_shortcut(page,url,'Meta')
@@ -1396,5 +1505,6 @@ if __name__ == '__main__':
     parser.add_argument('--formatting-only',action='store_true',help='Check Notepad text colors, underline, and keyboard shortcuts on macOS and Linux.')
     parser.add_argument('--pages-only',action='store_true',help='Check numbered Notepad pages, sync, persistence, and passage links.')
     parser.add_argument('--definitions-only',action='store_true',help='Check Notepad definitions and compact page controls.')
+    parser.add_argument('--note-tools-only',action='store_true',help='Check note formatting, definitions, hyperlinks, and shared Notepad tools.')
     args = parser.parse_args()
-    run(args.pdf,args.links_only,args.templates_only,args.formatting_only,args.pages_only,args.definitions_only)
+    run(args.pdf,args.links_only,args.templates_only,args.formatting_only,args.pages_only,args.definitions_only,args.note_tools_only)
