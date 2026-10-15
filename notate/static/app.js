@@ -38,7 +38,8 @@ const paths = {
   link:'<path d="m10 13 4-4M8 15l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M16 9l1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>',
   notepad:'<rect x="5" y="3" width="15" height="18" rx="2"/><path d="M3 7h4M3 12h4M3 17h4M11 8h5M11 12h5M11 16h3"/>',
   moon:'<path d="M20.8 13.3A9 9 0 0 1 10.7 3.2 9 9 0 1 0 20.8 13.3Z"/>',
-  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>'
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
+  warmth:'<path d="M5 9h12v7a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4ZM17 10h1a3 3 0 0 1 0 6h-1M8 3v3M12 2v4M16 3v3"/>'
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.file}</svg>`;
 function icons(root = document) { $$('[data-icon]', root).forEach(node => { node.innerHTML = icon(node.dataset.icon); }); }
@@ -75,13 +76,29 @@ const layout = {
 };
 if (!Number.isFinite(layout.notesWidth)) layout.notesWidth = null;
 icons();
+const themes = {light:{label:'Light',icon:'sun',color:'#f4f3ed'},dark:{label:'Dark',icon:'moon',color:'#19221e'},brown:{label:'Warm brown',icon:'warmth',color:'#463126'}};
 function setTheme(theme, remember = true) {
+  if (!Object.hasOwn(themes,theme)) theme = 'light';
   document.documentElement.dataset.theme = theme;
   if (remember) writeLocal('notate-theme', theme);
-  const dark = theme === 'dark'; const button = $('#theme-toggle');
-  button.innerHTML = icon(dark ? 'sun' : 'moon'); button.setAttribute('aria-pressed', dark);
-  button.title = button.ariaLabel = dark ? 'Switch to light mode' : 'Switch to dark mode';
-  $('meta[name="theme-color"]').content = dark ? '#19221e' : '#f4f3ed';
+  const selected = themes[theme], button = $('#theme-toggle');
+  button.innerHTML = icon(selected.icon);
+  button.title = button.ariaLabel = `Choose theme (${selected.label})`;
+  $$('[data-theme-choice]').forEach(option => option.setAttribute('aria-checked',option.dataset.themeChoice === theme));
+  $('meta[name="theme-color"]').content = selected.color;
+  requestAnimationFrame(() => {
+    noteEditor?.view.requestMeasure(); notepadEditor?.view.requestMeasure(); definitionEditor?.view.requestMeasure();
+    schedulePadSelectionTools(); scheduleDefinition(); schedulePopupPosition();
+  });
+}
+function closeThemeMenu(restoreFocus = false) {
+  const menu = $('#theme-menu'), wasOpen = !menu.hidden;
+  menu.hidden = true; $('#theme-toggle').setAttribute('aria-expanded','false');
+  if (restoreFocus && wasOpen) $('#theme-toggle').focus();
+}
+function openThemeMenu(focus = true) {
+  $('#theme-menu').hidden = false; $('#theme-toggle').setAttribute('aria-expanded','true');
+  if (focus) $('[data-theme-choice][aria-checked="true"]').focus();
 }
 function popupsEnabled() { return !!state.active && state.popupPreferences[state.active.id] !== false; }
 function updatePopupToggle() {
@@ -1669,7 +1686,30 @@ async function boot() {
 }
 
 $('#new-note').onclick = newNoteDialog; $('#add-folder').onclick = () => folderDialog();
-$('#theme-toggle').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+// Mouse choices keep the writing cursor and selection; keyboard choices use menu focus.
+$('#theme-toggle').onmousedown = event => event.preventDefault();
+$('#theme-toggle').onclick = event => $('#theme-menu').hidden ? openThemeMenu(event.detail === 0) : closeThemeMenu(event.detail === 0);
+$('#theme-toggle').onkeydown = event => {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); openThemeMenu(); }
+};
+$$('[data-theme-choice]').forEach(button => {
+  button.onmousedown = event => event.preventDefault();
+  button.onclick = event => { setTheme(button.dataset.themeChoice); closeThemeMenu(event.detail === 0); };
+});
+$('#theme-menu').onkeydown = event => {
+  const options = $$('[data-theme-choice]'), index = options.indexOf(document.activeElement);
+  if (event.key === 'Tab') { closeThemeMenu(true); return; }
+  const next = event.key === 'ArrowDown' ? (index+1)%options.length : event.key === 'ArrowUp' ? (index+options.length-1)%options.length
+    : event.key === 'Home' ? 0 : event.key === 'End' ? options.length-1 : null;
+  if (next !== null) { event.preventDefault(); options[next].focus(); }
+};
+document.addEventListener('keydown',event => {
+  const menu = $('#theme-menu');
+  if (menu.hidden || menu.contains(document.activeElement) || !['ArrowDown','ArrowUp','Home','End'].includes(event.key)) return;
+  const options = $$('[data-theme-choice]'), current = options.findIndex(option => option.getAttribute('aria-checked') === 'true');
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length-1 : (current+(event.key === 'ArrowDown' ? 1 : options.length-1))%options.length;
+  event.preventDefault(); event.stopPropagation(); options[next].focus();
+},true);
 $('#toggle-popups').onclick = () => {
   if (!state.active) return;
   state.popupPreferences[state.active.id] = !popupsEnabled();
@@ -1849,17 +1889,19 @@ $('#reader').addEventListener('scroll',() => {
   },100);
 },{passive:true});
 document.addEventListener('pointerdown',event => {
+  if (!event.target.closest('.theme-picker')) closeThemeMenu();
   if (!event.target.closest('#notepad-definition-popover,#notepad-define,#note-define') && !((event.ctrlKey || event.metaKey) && event.target.closest('[data-definition-from]'))) closeDefinition();
   if (!event.target.closest('#notepad-editor,#note-editor,#notepad-selection-toolbar,#notepad-link,#notepad-color-toggle,#note-color-toggle,#note-define,#note-hyperlink')) hidePadSelectionTools();
   if (!event.target.closest('#floating-menu,#selection-color,.annotation-menu,.folder-menu,#document-menu')) $('#floating-menu').hidden = true;
   if (!event.target.closest('#selection-toolbar,#comment-popover,#reader')) hideSelection();
   if (!event.target.closest('#sidebar,#sidebar-toggle,#floating-menu,#modal')) closeNavigationDrawer();
-  if (!event.target.closest('#annotation-popover,#reader,#toggle-popups,#theme-toggle,.annotation-quote')) closeAnnotationPopover();
+  if (!event.target.closest('#annotation-popover,#reader,#toggle-popups,.theme-picker,.annotation-quote')) closeAnnotationPopover();
 });
 document.addEventListener('keydown',event => {
   if (event.key === 'Escape') {
     const dismissing = event.defaultPrevented || $('#modal').open || state.pendingPadLink || layout.drag ||
-      $$('#notepad-definition-popover,#notepad-selection-toolbar,#selection-toolbar,#annotation-popover,#comment-popover,#floating-menu').some(node => !node.hidden);
+      $$('#notepad-definition-popover,#notepad-selection-toolbar,#selection-toolbar,#annotation-popover,#comment-popover,#floating-menu,#theme-menu').some(node => !node.hidden);
+    closeThemeMenu(true);
     closeDefinition(); hidePadSelectionTools(); cancelPadLink(); hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; closeNavigationDrawer(); finishPaneResize();
     if (layout.fullscreen && !dismissing) setWorkspaceFullscreen(false);
   }

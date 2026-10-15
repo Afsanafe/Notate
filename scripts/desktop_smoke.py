@@ -42,6 +42,12 @@ def run():
                 wait_for(f"!!document.querySelector('.file-card[data-id=\"{item_id}\"]')")
                 window.evaluate_js(f"document.querySelector('.file-card[data-id=\"{item_id}\"]').click()")
                 wait_for("!!document.querySelector('.pdf-page .textLayer span')")
+                window.evaluate_js("window.__nativeThemeCanvas = document.querySelector('.pdf-page canvas'); document.querySelector('#theme-toggle').click(); document.querySelector('[data-theme-choice=brown]').click()")
+                wait_for("document.documentElement.dataset.theme === 'brown'")
+                assert window.evaluate_js("getComputedStyle(document.querySelector('.pdf-page')).backgroundColor") == 'rgb(239, 219, 187)'
+                assert window.evaluate_js("getComputedStyle(document.querySelector('.pdf-page canvas')).mixBlendMode") == 'multiply'
+                assert window.evaluate_js("window.__nativeThemeCanvas === document.querySelector('.pdf-page canvas')")
+                window.evaluate_js("document.querySelector('#theme-toggle').click(); document.querySelector('[data-theme-choice=light]').click()")
                 window.evaluate_js('''(() => {
                   window.__layoutNotesWidth = document.querySelector('#annotations-panel').getBoundingClientRect().width;
                   window.__layoutPDFWidth = document.querySelector('.pdf-page').getBoundingClientRect().width;
@@ -121,7 +127,7 @@ def run():
                 assert 'Original file: Desktop reading test.pdf' in copied
                 assert '## Highlighted source text\n\n> Reading is a conversation with an idea.' in copied
                 assert '### Initial comment or question\n\n> **A question** from the desktop app.' in copied
-                window.evaluate_js("if (document.documentElement.dataset.theme !== 'dark') document.querySelector('#theme-toggle').click()")
+                window.evaluate_js("document.querySelector('#theme-toggle').click(); document.querySelector('[data-theme-choice=dark]').click()")
                 wait_for("document.documentElement.dataset.theme === 'dark'")
                 window.evaluate_js('''(() => {
                   const container = document.querySelector('.pdf-page .textLayer');
@@ -207,7 +213,7 @@ def run():
                 window.evaluate_js("document.querySelector('#read-mode').click()")
                 wait_for("document.querySelector('#note-content .md-answer-text')?.textContent === 'A useful finding.'")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-answer-text')).color") == 'rgb(159, 201, 243)'
-                window.evaluate_js("document.querySelector('#theme-toggle').click()")
+                window.evaluate_js("document.querySelector('#theme-toggle').click(); document.querySelector('[data-theme-choice='+(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')+']').click()")
                 wait_for("document.documentElement.dataset.theme === 'light'")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-answer-text')).color") == 'rgb(35, 79, 135)'
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-answer-text')).fontWeight") == '400'
@@ -231,7 +237,7 @@ def run():
                 wait_for("document.querySelector('#note-content .md-question-text')?.textContent === 'Why does this work?'")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-question-text')).color") == 'rgb(152, 107, 0)'
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content ul')).listStyleType") == 'circle'
-                window.evaluate_js("document.querySelector('#theme-toggle').click()")
+                window.evaluate_js("document.querySelector('#theme-toggle').click(); document.querySelector('[data-theme-choice='+(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')+']').click()")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#note-content .md-question-text')).color") == 'rgb(241, 205, 103)'
                 results['question_example_shortcuts'] = 'passed'
                 window.evaluate_js("document.querySelector('[data-filter=notepad]').click()")
@@ -240,7 +246,9 @@ def run():
                 wait_for("document.querySelector('#notepad-editor .cm-content').textContent === 'Native colored thought.' && !document.querySelector('#notepad-editor .cm-placeholder')")
                 window.evaluate_js("document.querySelector('#notepad-color-toggle').click(); document.querySelector('[data-notepad-color=purple]').click()")
                 wait_for("document.querySelector('#notepad-color-toggle').ariaLabel === 'Text color: Purple'")
-                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').focus(); getSelection().selectAllChildren(document.querySelector('#notepad-editor .cm-line'))")
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').focus()")
+                wait_for("document.activeElement === document.querySelector('#notepad-editor .cm-content')")
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'a',code:'KeyA',metaKey:true,bubbles:true,cancelable:true}))")
                 wait_for("document.querySelector('#notepad-selection-toolbar').hidden === false && !document.querySelector('#notepad-underline').disabled")
                 window.evaluate_js("document.querySelector('#notepad-underline').click()")
                 wait_for("document.querySelector('#notepad-editor .md-underline')?.textContent === 'Native colored thought.'")
@@ -249,7 +257,7 @@ def run():
                 wait_for("document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
                 assert httpx.get(url+f'/api/items/{template_id}/notepad').json()['markdown'] == '<u><span class="md-text-purple">Native colored thought.</span></u>'
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-editor .md-text-purple')).color") == 'rgb(211, 162, 239)'
-                window.evaluate_js("document.querySelector('#theme-toggle').click()")
+                window.evaluate_js("document.querySelector('#theme-toggle').click(); document.querySelector('[data-theme-choice='+(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')+']').click()")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-editor .md-text-purple')).color") == 'rgb(123, 61, 170)'
                 results['notepad_text_formatting'] = 'passed'
                 wait_for("!document.querySelector('#notepad-add-page').disabled")
@@ -266,7 +274,9 @@ def run():
                 wait_for("document.querySelector('#notepad-page-label').textContent === 'Page 2 of 2' && document.querySelector('#notepad-editor .cm-content').textContent === 'Native second page.'")
                 results['notepad_pages'] = 'passed'
                 assert window.evaluate_js("document.querySelector('.notepad-page-nav').getBoundingClientRect().height") <= 28
-                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').focus(); getSelection().selectAllChildren(document.querySelector('#notepad-editor .cm-line'))")
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').focus()")
+                wait_for("document.activeElement === document.querySelector('#notepad-editor .cm-content')")
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'a',code:'KeyA',metaKey:true,bubbles:true,cancelable:true}))")
                 wait_for("!document.querySelector('#notepad-selection-toolbar').hidden && !document.querySelector('#notepad-define').disabled")
                 window.evaluate_js("document.querySelector('#notepad-define').click()")
                 wait_for("!document.querySelector('#notepad-definition-popover').hidden && !!document.querySelector('#notepad-definition-editor .cm-content')")
@@ -284,6 +294,11 @@ def run():
                 wait_for("document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
                 assert 'data-definition="A%20native%20**definition**."' in httpx.get(url+f'/api/items/{template_id}/notepad?page=2').json()['markdown']
                 results['notepad_definitions'] = 'passed'
+                window.evaluate_js("document.querySelector('#theme-toggle').click(); document.querySelector('[data-theme-choice=brown]').click()")
+                wait_for("document.documentElement.dataset.theme === 'brown'")
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-editor')).backgroundColor") == 'rgb(239, 219, 187)'
+                assert window.evaluate_js("getComputedStyle(document.querySelector('#sidebar')).backgroundColor") == 'rgb(53, 37, 29)'
+                results['warm_brown_theme'] = 'passed'
                 results.update(status='passed',native_engine='macOS WKWebView',pdf_text_selection=True,comment_saved_in_shared_backend=True,
                                dark_mode=True,contained_selection=True,passage_popup_reply=True,popup_toggle=True,copy_markdown=True,markdown_preview=True,answer_types=True,
                                note_markdown_live_preview=True,note_tables=True,comment_live_editing=True,command_shortcuts=True,document_notepad=True,inline_answer_shortcut=True)

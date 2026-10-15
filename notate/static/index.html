@@ -9,7 +9,7 @@
   <script>
     try {
       const saved = JSON.parse(localStorage.getItem('notate-theme'));
-      document.documentElement.dataset.theme = saved === 'dark' || saved === 'light' ? saved : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.dataset.theme = ['light','dark','brown'].includes(saved) ? saved : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
     } catch { document.documentElement.dataset.theme = 'light'; }
     function showStartupFailure() {
       if (document.documentElement.dataset.notateReady === 'true') return;
@@ -24,8 +24,8 @@
   </script>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='11' fill='%23345143'/%3E%3Cpath d='M12 29V11h4l9 13V11h3v18h-4l-9-13v13z' fill='%23f4f3ed'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/vendor/pdf_viewer.css?v=3a089aad7ded6842">
-  <link rel="stylesheet" href="/static/style.css?v=af0ddb02db5b1424">
-  <script type="module" src="/static/app.js?v=41f45772830e4abe" onerror="showStartupFailure()"></script>
+  <link rel="stylesheet" href="/static/style.css?v=5e7f51a48d0c3af5">
+  <script type="module" src="/static/app.js?v=540a9b4aef582c64" onerror="showStartupFailure()"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -44,7 +44,7 @@
     </aside>
 
     <main class="main" id="main">
-      <header class="topbar"><div class="breadcrumb"><button id="sidebar-toggle" class="icon-button" aria-label="Hide navigation" title="Hide navigation" aria-controls="sidebar" aria-expanded="true"><span data-icon="menu"></span></button><span data-icon="home"></span><span>Workspace</span><span class="breadcrumb-slash">/</span><strong id="breadcrumb-current">All documents</strong></div><div class="top-actions"><button id="toggle-popups" class="button top-control" aria-pressed="true" aria-label="Show passage popups" title="Show annotation threads beside marked text"><span data-icon="comment"></span><span class="top-control-label">Popups</span><span class="toggle-track" aria-hidden="true"><span></span></span></button><button id="theme-toggle" class="icon-button theme-toggle" aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode"><span data-icon="moon"></span></button><button id="new-note" class="button subtle"><span data-icon="plus"></span>New note</button><button id="import" class="button primary"><span data-icon="upload"></span>Import<span class="desktop-only"> document</span></button></div></header>
+      <header class="topbar"><div class="breadcrumb"><button id="sidebar-toggle" class="icon-button" aria-label="Hide navigation" title="Hide navigation" aria-controls="sidebar" aria-expanded="true"><span data-icon="menu"></span></button><span data-icon="home"></span><span>Workspace</span><span class="breadcrumb-slash">/</span><strong id="breadcrumb-current">All documents</strong></div><div class="top-actions"><button id="toggle-popups" class="button top-control" aria-pressed="true" aria-label="Show passage popups" title="Show annotation threads beside marked text"><span data-icon="comment"></span><span class="top-control-label">Popups</span><span class="toggle-track" aria-hidden="true"><span></span></span></button><div class="theme-picker"><button type="button" id="theme-toggle" class="icon-button theme-toggle" aria-haspopup="menu" aria-controls="theme-menu" aria-expanded="false" aria-label="Choose theme" title="Choose theme"><span data-icon="sun"></span></button><div id="theme-menu" class="theme-menu" role="menu" aria-label="Color theme" hidden><button type="button" data-theme-choice="light" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-light" aria-hidden="true"></span>Light<span class="theme-choice-check" data-icon="check"></span></button><button type="button" data-theme-choice="dark" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-dark" aria-hidden="true"></span>Dark<span class="theme-choice-check" data-icon="check"></span></button><button type="button" data-theme-choice="brown" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-brown" aria-hidden="true"></span>Warm brown<span class="theme-choice-check" data-icon="check"></span></button></div></div><button id="new-note" class="button subtle"><span data-icon="plus"></span>New note</button><button id="import" class="button primary"><span data-icon="upload"></span>Import<span class="desktop-only"> document</span></button></div></header>
       <div class="document-heading"><div class="heading-copy"><div class="eyebrow" id="document-eyebrow">YOUR READING ROOM</div><h1 id="document-title">Make room for a new idea.</h1><div class="document-meta" id="document-meta">A home for your reading and everything you discover.</div></div><div class="document-actions"><button id="toggle-annotations" class="button subtle" title="Toggle annotations"><span data-icon="panel"></span><span class="desktop-only">Annotations</span><span id="annotation-count" class="count-pill">0</span></button><button id="document-menu" class="icon-button more-button" aria-label="Document options" title="Document options"><span data-icon="more"></span></button></div></div>
       <div class="reading-workspace" id="reading-workspace">
         <section class="reader-column" id="reader-column" aria-label="Document reader">

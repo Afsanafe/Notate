@@ -27,6 +27,17 @@ ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS = ROOT / '.local-data' / 'artifacts'
 
 
+def choose_theme(page, theme):
+    page.locator('#theme-toggle').click()
+    page.locator(f'[data-theme-choice="{theme}"]').click()
+    expect(page.locator('html')).to_have_attribute('data-theme',theme)
+    page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+
+
+def toggle_theme(page):
+    choose_theme(page,'light' if page.locator('html').get_attribute('data-theme') == 'dark' else 'dark')
+
+
 def sample_pdf():
     writer = PdfWriter()
     font = DictionaryObject({NameObject('/Type'):NameObject('/Font'),NameObject('/Subtype'):NameObject('/Type1'),
@@ -264,12 +275,12 @@ def check_pad_passage_links(page, context, url):
     assert 'My interpretation is a ' in saved
     page.locator('#notepad-source').click(); expect(editor).to_contain_text('#notate-passage-')
     page.locator('#notepad-source').click(); assert '#notate-passage-' not in editor.inner_text()
-    if page.locator('html').get_attribute('data-theme') != 'light': page.locator('#theme-toggle').click()
+    if page.locator('html').get_attribute('data-theme') != 'light': toggle_theme(page)
     assert word_link.evaluate('node => getComputedStyle(node).textDecorationLine') == 'underline'
     assert word_link.evaluate('node => getComputedStyle(node).color') == 'rgb(0, 122, 120)'
     assert mark.evaluate('node => getComputedStyle(node).borderBottomColor') == 'rgb(0, 122, 120)'
     page.screenshot(path=str(ARTIFACTS/'pad-links-light.png'),full_page=True)
-    page.locator('#theme-toggle').click()
+    toggle_theme(page)
     assert word_link.evaluate('node => getComputedStyle(node).color') == 'rgb(112, 225, 215)'
     assert mark.evaluate('node => getComputedStyle(node).borderBottomColor') == 'rgb(112, 225, 215)'
     page.screenshot(path=str(ARTIFACTS/'pad-links-dark.png'),full_page=True)
@@ -323,7 +334,7 @@ def check_pad_passage_links(page, context, url):
     page.locator('#notepad-link').click(); expect(page.locator('#pad-link-banner')).to_be_visible()
     page.keyboard.press('Escape'); expect(page.locator('#pad-link-banner')).to_be_hidden()
     assert len(page.request.get(f'{url}/api/items/{item_id}/annotations').json()) == 2
-    if page.locator('html').get_attribute('data-theme') != theme: page.locator('#theme-toggle').click()
+    if page.locator('html').get_attribute('data-theme') != theme: toggle_theme(page)
     page.locator(f'.file-card[data-id="{original_id}"]').click()
     expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
     assert page.request.delete(f'{url}/api/items/{item_id}').status == 200
@@ -397,10 +408,10 @@ def check_markdown_editor(page, url):
     page.locator('#markdown-preview-toggle').click()
     expect(page.locator('#note-editor .cm-content')).to_contain_text('| Topic | Column 2 |')
     page.locator('#markdown-preview-toggle').click()
-    page.locator('#theme-toggle').click()
+    toggle_theme(page)
     expect(page.locator('html')).to_have_attribute('data-theme','dark')
     page.screenshot(path=str(ARTIFACTS/'markdown-dark-editor.png'),full_page=True)
-    page.locator('#theme-toggle').click()
+    toggle_theme(page)
     page.locator('#document-menu').click()
     with page.expect_download() as download:
         page.locator('.menu-item').filter(has_text='Download note (Markdown)').click()
@@ -474,7 +485,7 @@ def assert_answer_style(container, dark=False):
 
 
 def check_inline_answer_shortcut(page, url, modifier):
-    if page.locator('html').get_attribute('data-theme') == 'dark': page.locator('#theme-toggle').click()
+    if page.locator('html').get_attribute('data-theme') == 'dark': toggle_theme(page)
     title = f'{modifier} inline answer checks'
     page.locator('#new-note').click(); page.locator('#note-title').fill(title); page.locator('#modal-submit').click()
     editor = page.locator('#note-editor .cm-content')
@@ -491,7 +502,7 @@ def check_inline_answer_shortcut(page, url, modifier):
     page.locator('#read-mode').click(); assert_answer_style(page.locator('#note-content'))
     note_id = page.locator('.file-card.active').get_attribute('data-id')
     assert httpx.get(url+f'/api/items/{note_id}').json()['markdown'] == '**Answer:** *A useful finding.*\n'
-    page.locator('#theme-toggle').click(); assert_answer_style(page.locator('#note-content'),dark=True)
+    toggle_theme(page); assert_answer_style(page.locator('#note-content'),dark=True)
     page.locator('#edit-mode').click(); assert_answer_style(page.locator('#note-editor .cm-content'),dark=True)
     page.locator('#read-mode').click()
     select_text(page,'#note-content','A useful finding.'); page.locator('[data-annotate="comment"]').click()
@@ -518,7 +529,7 @@ def check_inline_answer_shortcut(page, url, modifier):
     expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
     assert httpx.get(url+f'/api/items/{note_id}/notepad').json()['markdown'] == source
     page.screenshot(path=str(ARTIFACTS/f'inline-answer-{modifier.lower()}-dark.png'),full_page=True)
-    page.locator('#theme-toggle').click(); assert_answer_style(pad)
+    toggle_theme(page); assert_answer_style(pad)
     page.screenshot(path=str(ARTIFACTS/f'inline-answer-{modifier.lower()}-light.png'),full_page=True)
     page.reload(); assert_answer_style(page.locator('#note-content'))
     assert_answer_style(page.locator('#annotations-list .comment-text').first)
@@ -569,7 +580,7 @@ def assert_question_example(container, dark=False):
 
 
 def check_question_example_shortcuts(page, url, modifier):
-    if page.locator('html').get_attribute('data-theme') == 'dark': page.locator('#theme-toggle').click()
+    if page.locator('html').get_attribute('data-theme') == 'dark': toggle_theme(page)
     title = modifier+' question and example checks'
     page.locator('#new-note').click(); page.locator('#note-title').fill(title); page.locator('#modal-submit').click()
     editor = page.locator('#note-editor .cm-content')
@@ -596,7 +607,7 @@ def check_question_example_shortcuts(page, url, modifier):
     expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
     assert httpx.get(url+f'/api/items/{note_id}/notepad').json()['markdown'] == source
     page.screenshot(path=str(ARTIFACTS/f'question-example-{modifier.lower()}-light.png'),full_page=True)
-    page.locator('#theme-toggle').click(); assert_question_example(pad,dark=True)
+    toggle_theme(page); assert_question_example(pad,dark=True)
     page.screenshot(path=str(ARTIFACTS/f'question-example-{modifier.lower()}-dark.png'),full_page=True)
     page.reload(); assert_question_example(page.locator('#note-content'),dark=True)
     page.locator('[data-filter="notepad"]').click(); page.locator('#notepad-editor .cm-content').press('ArrowDown')
@@ -724,7 +735,7 @@ def check_notepad_text_formatting(page, context, url, modifier):
     expect(editor.locator('.md-text-purple')).to_have_text('A colored discovery.')
     colors = ['red','orange','yellow','light-green','dark-green','light-blue','dark-blue','purple']
     for theme in ['light','dark']:
-        if page.locator('html').get_attribute('data-theme') != theme: page.locator('#theme-toggle').click()
+        if page.locator('html').get_attribute('data-theme') != theme: toggle_theme(page)
         editor.focus(); expect(toolbar).to_be_visible()
         for color in colors:
             page.locator(f'[data-notepad-color="{color}"]').click()
@@ -810,7 +821,7 @@ def check_notepad_definitions(page, context, url):
     source = f'<span class="md-definition" data-definition="{encoded}">Evidence</span> supports a discovery.'
     assert page.request.get(f'{url}/api/items/{item_id}/notepad').json()['markdown'] == source
     for theme, modifier in [('light','Meta'),('dark','Control')]:
-        if page.locator('html').get_attribute('data-theme') != theme: page.locator('#theme-toggle').click()
+        if page.locator('html').get_attribute('data-theme') != theme: toggle_theme(page)
         mark.click(modifiers=[modifier]); expect(popup).to_be_visible()
         expect(page.locator('#notepad-definition-display strong')).to_have_text("reader's")
         expect(page.locator('#notepad-definition-display li')).to_have_count(2)
@@ -946,7 +957,7 @@ def check_note_tools(page, context, url):
     page.locator('#read-mode').click(); page.reload()
     expect(reading_link).to_have_text('Read the source')
     for theme in ['light','dark']:
-        if page.locator('html').get_attribute('data-theme') != theme: page.locator('#theme-toggle').click()
+        if page.locator('html').get_attribute('data-theme') != theme: toggle_theme(page)
         assert reading_link.evaluate('(node)=>getComputedStyle(node).backgroundColor') != 'rgba(0, 0, 0, 0)'
         page.locator('#edit-mode').click(); expect(link).to_have_text('Read the source')
         assert link.evaluate('(node)=>getComputedStyle(node).color') == reading_link.evaluate('(node)=>getComputedStyle(node).color')
@@ -958,7 +969,7 @@ def check_note_tools(page, context, url):
     expect(page.locator('#note-hyperlink')).to_be_in_viewport()
     expect(page.locator('#note-color-toggle')).to_be_in_viewport()
     page.locator('#toggle-workspace-fullscreen').click(); page.set_viewport_size({'width':1512,'height':982})
-    if page.locator('html').get_attribute('data-theme') != original_theme: page.locator('#theme-toggle').click()
+    if page.locator('html').get_attribute('data-theme') != original_theme: toggle_theme(page)
     page.locator('.file-card').filter(has_text='Welcome to Notate').click()
     print('Note tools passed: eight colors, underline, shortcut, definitions in Edit/Read, safe indigo hyperlinks, edit/remove, undo, export, persistence, sync, mobile, and independent Notepad content.',flush=True)
 
@@ -1058,7 +1069,7 @@ def check_notepad_pages(page, context, url):
     exported = page.request.get(f'{url}/api/items/{item_id}/export').json()
     assert [entry['page'] for entry in exported['notepad_pages']] == [1,2,3]
     for theme in ['light','dark']:
-        if page.locator('html').get_attribute('data-theme') != theme: page.locator('#theme-toggle').click()
+        if page.locator('html').get_attribute('data-theme') != theme: toggle_theme(page)
         page.screenshot(path=str(ARTIFACTS/f'notepad-pages-{theme}.png'),full_page=True)
     other.close(); page.locator('.file-card').filter(has_text='Welcome to Notate').click()
     print('Numbered Notepad pages, legacy content, save-before-navigation, separate undo, independent sync, conflict/draft recovery, live page counts, cross-page links, reload, source modes, download, and export passed.',flush=True)
@@ -1089,7 +1100,87 @@ def check_notepad_deletion(page, url):
     print('Deliberate document deletion clears its notepad; remote deletion preserves drafts and can recover them as a new note.',flush=True)
 
 
-def run(additional_pdf=None, links_only=False, templates_only=False, formatting_only=False, pages_only=False, definitions_only=False, note_tools_only=False):
+def check_themes(page, context, url):
+    # Choose the third theme with a keyboard, including menu focus and dismissal.
+    page.locator('#theme-toggle').focus(); page.keyboard.press('ArrowDown')
+    expect(page.locator('#theme-menu')).to_be_visible()
+    page.keyboard.press('End'); expect(page.locator('[data-theme-choice="brown"]')).to_be_focused()
+    page.keyboard.press('Enter'); expect(page.locator('html')).to_have_attribute('data-theme','brown')
+    expect(page.locator('#theme-menu')).to_be_hidden(); expect(page.locator('#theme-toggle')).to_be_focused()
+    page.locator('#theme-toggle').click(); page.keyboard.press('Escape')
+    expect(page.locator('#theme-menu')).to_be_hidden(); expect(page.locator('#theme-toggle')).to_be_focused()
+    page.locator('#theme-toggle').click(); page.locator('#document-title').click()
+    expect(page.locator('#theme-menu')).to_be_hidden()
+    assert page.locator('#sidebar').evaluate('node => getComputedStyle(node).backgroundColor') == 'rgb(53, 37, 29)'
+    page.locator('#file-input').set_input_files({'name':'Warm reading.pdf','mimeType':'application/pdf','buffer':sample_pdf()})
+    expect(page.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
+    item_id = page.locator('.file-card.active').get_attribute('data-id')
+    canvas = page.locator('.pdf-page[data-page="1"] canvas')
+    page.evaluate('window.__themeCanvas = document.querySelector(".pdf-page canvas")')
+    for theme in ['light','dark','brown']:
+        choose_theme(page,theme)
+        assert page.evaluate('window.__themeCanvas === document.querySelector(".pdf-page canvas")'), 'Theme changes must reuse rendered PDF pages.'
+    assert canvas.evaluate('node => getComputedStyle(node).mixBlendMode') == 'multiply'
+    assert page.locator('.pdf-page').first.evaluate('node => getComputedStyle(node).backgroundColor') == 'rgb(239, 219, 187)'
+    page.locator('[data-filter="notepad"]').click()
+    colors = ['red','orange','yellow','light-green','dark-green','light-blue','dark-blue','purple']
+    source = '# Warm discoveries\n\n**Question:** *What does this mean?*\n\n**Answer:** *Follow the evidence.*\n\n' + '\n'.join(f'<span class="md-text-{color}">{color} finding</span>' for color in colors)
+    editor = page.locator('#notepad-editor .cm-content'); editor.fill(source); editor.press('ControlOrMeta+Home')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    editor.press('ControlOrMeta+a'); selected = page.evaluate('getSelection().toString()')
+    choose_theme(page,'dark'); expect(editor).to_be_focused()
+    choose_theme(page,'brown'); expect(editor).to_be_focused()
+    assert page.evaluate('getSelection().toString()') == selected
+    editor.press('ControlOrMeta+Home')
+    assert page.locator('#notepad-editor').evaluate('node => getComputedStyle(node).backgroundColor') == 'rgb(239, 219, 187)'
+    assert page.locator('#notepad-editor .md-question-text').evaluate('node => getComputedStyle(node).color') == 'rgb(121, 82, 0)'
+    assert page.locator('#notepad-editor .md-answer-text').evaluate('node => getComputedStyle(node).color') == 'rgb(35, 79, 135)'
+    for color in colors:
+        contrast = editor.locator(f'.md-text-{color}').evaluate('''node => {
+          const lum = value => value.match(/[\\d.]+/g).slice(0,3).map(Number).map(v => {v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4;}).reduce((s,v,i)=>s+v*[.2126,.7152,.0722][i],0);
+          const ink = lum(getComputedStyle(node).color), paper = lum(getComputedStyle(document.querySelector('#notepad-editor')).backgroundColor);
+          return (Math.max(ink,paper)+.05)/(Math.min(ink,paper)+.05);
+        }''')
+        assert contrast >= 4.5, (color,contrast)
+    page.locator('#reader').focus()
+    select_text(page,'.pdf-page[data-page="1"] .textLayer','Reading is a conversation with an idea.')
+    page.locator('[data-annotate="pad"]').click()
+    expect(page.locator('#notepad-editor .md-pad-link')).to_have_text('Reading is a conversation with an idea.')
+    expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+    page.locator('#document-title').click()
+    page.screenshot(path=str(ARTIFACTS/'warm-brown-pdf-notepad.png'),full_page=True)
+    # Preferences survive reload and synchronize to tabs at the same origin.
+    other = context.new_page(); other.goto(url)
+    expect(other.locator('html')).to_have_attribute('data-theme','brown')
+    choose_theme(other,'dark'); expect(page.locator('html')).to_have_attribute('data-theme','dark')
+    choose_theme(page,'brown'); expect(other.locator('html')).to_have_attribute('data-theme','brown'); other.close()
+    page.reload(); expect(page.locator('html')).to_have_attribute('data-theme','brown')
+    page.locator('[data-filter="notepad"]').click()
+    expect(page.locator('#notepad-editor .md-pad-link')).to_have_text('Reading is a conversation with an idea.')
+    assert page.request.get(f'{url}/api/items/{item_id}/notepad').json()['markdown'].startswith(source)
+    # Markdown reading and writing surfaces are tan, including the main editor.
+    page.locator('.file-card').filter(has_text='Welcome to Notate').click()
+    assert page.locator('.text-paper').evaluate('node => getComputedStyle(node).backgroundColor') == 'rgb(239, 219, 187)'
+    page.locator('#edit-mode').click()
+    expect(page.locator('#note-editor .cm-content')).to_be_visible()
+    page.screenshot(path=str(ARTIFACTS/'warm-brown-note-editor.png'),full_page=True)
+    page.locator('#read-mode').click()
+    mobile = context.browser.new_context(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
+    phone = mobile.new_page(); phone.goto(url); choose_theme(phone,'brown')
+    phone.locator('#theme-toggle').click()
+    bounds = phone.locator('#theme-menu').bounding_box()
+    assert bounds['x'] >= 0 and bounds['x']+bounds['width'] <= 390
+    phone.locator('[data-theme-choice="brown"]').click()
+    if not phone.locator('#annotations-panel').is_visible(): phone.locator('#toggle-annotations').click()
+    phone.locator('[data-filter="notepad"]').click(); expect(phone.locator('#notepad-editor .cm-content')).to_be_visible()
+    assert phone.locator('#notepad-editor').evaluate('node => getComputedStyle(node).backgroundColor') == 'rgb(239, 219, 187)'
+    assert phone.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    phone.screenshot(path=str(ARTIFACTS/'warm-brown-mobile.png'),full_page=True)
+    mobile.close(); choose_theme(page,'light')
+    print('Light, Dark, and Warm brown themes: keyboard/menu controls, tan PDF/notes/Notepad, readable colors, cached canvases, annotations, reload, tab sync, and mobile passed.',flush=True)
+
+
+def run(additional_pdf=None, links_only=False, templates_only=False, formatting_only=False, pages_only=False, definitions_only=False, note_tools_only=False, themes_only=False):
     ARTIFACTS.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='notate-browser-') as temporary:
         with socket.socket() as socket_handle:
@@ -1114,6 +1205,14 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                 page.goto(url); expect(page.locator('#document-title')).to_have_text('Welcome to Notate')
                 expect(page.locator('#connection-label')).to_contain_text('synced')
                 print('Workspace loads and connects to live sync.',flush=True)
+                if themes_only:
+                    try: check_themes(page,context,url)
+                    except BaseException:
+                        print('Theme browser errors:',errors,flush=True)
+                        page.screenshot(path=str(ARTIFACTS/'theme-failure.png'),full_page=True)
+                        raise
+                    assert not errors, errors; assert not outside_requests, outside_requests
+                    browser.close(); return
                 check_startup_recovery(page,context,url)
                 if note_tools_only:
                     try: check_note_tools(page,context,url)
@@ -1163,6 +1262,7 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                     browser.close()
                     return
                 check_note_tools(page,context,url)
+                check_themes(page,context,url)
                 check_markdown_editor(page,url)
                 check_comments_notepad_and_shortcuts(page,url,'Meta','Mac shortcut checks')
                 check_inline_answer_shortcut(page,url,'Meta')
@@ -1301,9 +1401,9 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                 expect(page.locator('#annotations-list .comment-entry.answer')).to_have_count(1)
                 expect(page.locator('.comment-text strong').last).to_have_text('Clear finding')
                 page.evaluate("document.querySelector('#annotations-list .comment-entry.answer')?.scrollIntoView({block:'center',behavior:'instant'})")
-                if page.locator('html').get_attribute('data-theme') == 'dark': page.locator('#theme-toggle').click()
+                if page.locator('html').get_attribute('data-theme') == 'dark': toggle_theme(page)
                 page.screenshot(path=str(ARTIFACTS/'markdown-answers-light.png'),full_page=True)
-                page.locator('#theme-toggle').click()
+                toggle_theme(page)
                 assert page.locator('.comment-entry.answer').evaluate(r'(entry) => { const color=getComputedStyle(entry).backgroundColor.match(/\d+/g).slice(0,3).map(Number); return color[2] > color[0]+10; }')
                 page.screenshot(path=str(ARTIFACTS/'markdown-answers-dark.png'),full_page=True)
                 print('Live Markdown comment formatting, blue answers, type changes, draft preservation, live sync, persistence, and copy labels work.',flush=True)
@@ -1311,7 +1411,7 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                 expect(page.locator('#document-title')).to_have_text('My research findings')
                 print('Per-item Markdown copy includes full quotes, saved comments/replies, source context, and clipboard fallbacks; unsent drafts stay private.',flush=True)
 
-                if page.locator('html').get_attribute('data-theme') != 'dark': page.locator('#theme-toggle').click()
+                if page.locator('html').get_attribute('data-theme') != 'dark': toggle_theme(page)
                 expect(page.locator('html')).to_have_attribute('data-theme','dark')
                 assert page.locator('.annotation-card').first.evaluate(r'(node) => getComputedStyle(node).backgroundColor.match(/\d+/g).slice(0,3).every(channel => Number(channel) < 120)'), 'Annotation cards must use a dark reading surface.'
                 page.set_viewport_size({'width':1050,'height':900})
@@ -1447,7 +1547,7 @@ def run(additional_pdf=None, links_only=False, templates_only=False, formatting_
                 phone.locator('.file-card').filter(has_text='A field guide').click(); expect(phone.locator('.pdf-page[data-page="1"] .textLayer')).to_be_visible()
                 phone.locator('#toggle-annotations').click(); expect(phone.locator('#annotations-panel')).to_be_visible()
                 phone.locator('#close-annotations').click()
-                phone.locator('#theme-toggle').click(); expect(phone.locator('html')).to_have_attribute('data-theme','dark')
+                toggle_theme(phone); expect(phone.locator('html')).to_have_attribute('data-theme','dark')
                 click_mark(phone,'comment'); expect(phone.locator('#annotation-popover')).to_be_visible()
                 mobile_popup = phone.locator('#annotation-popover').bounding_box()
                 assert mobile_popup['x'] >= 0 and mobile_popup['x']+mobile_popup['width'] <= 390
@@ -1529,5 +1629,6 @@ if __name__ == '__main__':
     parser.add_argument('--pages-only',action='store_true',help='Check numbered Notepad pages, sync, persistence, and passage links.')
     parser.add_argument('--definitions-only',action='store_true',help='Check Notepad definitions and compact page controls.')
     parser.add_argument('--note-tools-only',action='store_true',help='Check note formatting, definitions, hyperlinks, and shared Notepad tools.')
+    parser.add_argument('--themes-only',action='store_true',help='Check the theme chooser, Warm brown paper/colors, preferences, and mobile.')
     args = parser.parse_args()
-    run(args.pdf,args.links_only,args.templates_only,args.formatting_only,args.pages_only,args.definitions_only,args.note_tools_only)
+    run(args.pdf,args.links_only,args.templates_only,args.formatting_only,args.pages_only,args.definitions_only,args.note_tools_only,args.themes_only)
