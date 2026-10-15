@@ -1,4 +1,4 @@
-import {createNoteEditor, getSourcePassageLinks, renderEditorMarkdown, TEXT_COLORS} from './vendor/note-editor.js';
+import {createNoteEditor, getSourcePassageLinks, getSourceDefinitions, renderEditorMarkdown, TEXT_COLORS} from './vendor/note-editor.js?v=da3be2f236d39a9a';
 
 const $ = (query, root = document) => root.querySelector(query);
 const $$ = (query, root = document) => [...root.querySelectorAll(query)];
@@ -61,6 +61,7 @@ const state = {
   notepad: null, notepadLoading: null, notepadPages: new Map(), notepadPageList: [], notepadPageBusy: false,
   pendingPadLink: null, linkingPad: false, padSelectionFrame: null, padColorMenu: false,
   definitionTarget: null, definitionFrame: null,
+  formattingEditor: 'notepad',
   livePreview: readLocal('notate-live-preview', true)
 };
 let noteEditor = null;
@@ -372,7 +373,7 @@ function renderEmpty() {
   updatePopupToggle();
 }
 function resetReader() {
-  closeNotepadDefinition();
+  closeDefinition();
   cancelPadLink(); cancelAnimationFrame(state.padSelectionFrame); state.padSelectionFrame = null;
   hidePadSelectionTools();
   noteEditor?.destroy(); noteEditor = null; state.editing = false;
@@ -434,12 +435,34 @@ function setEditMode(edit) {
   }
   state.editing = edit; const content = $('#note-content'); if (!content) return;
   content.hidden = edit; $('#note-editor').hidden = !edit;
-  if (edit && !noteEditor) noteEditor = createNoteEditor($('#note-editor'), state.active.markdown || '', onNoteInput, state.livePreview);
-  if (!edit) { content.innerHTML = state.active.content; requestAnimationFrame(renderTextMarks); }
+  closeDefinition(); hidePadSelectionTools();
+  if (edit && !noteEditor) noteEditor = createNoteEditor($('#note-editor'), state.active.markdown || '', onNoteInput, state.livePreview, {
+    onApplyTextColor: () => applyEditorTextColor('note'),
+    onDefinition: (definition,rect,label) => openDefinition(editorContext('note'),definition,rect,label),
+    onHyperlink: url => window.open(url,'_blank','noopener,noreferrer'),
+    onSelectionChange: (selection,update) => {
+      if (noteEditor?.view.hasFocus) state.formattingEditor = 'note';
+      mapDefinitionTarget(noteEditor,update); scheduleDefinition(); schedulePadSelectionTools();
+    }
+  });
+  if (!edit) { content.innerHTML = state.active.content; prepareNoteReading(); requestAnimationFrame(renderTextMarks); }
   $('.text-paper').classList.toggle('editing',edit); $('#format-toolbar').hidden = !edit;
   $('#edit-mode')?.classList.toggle('active',edit); $('#read-mode')?.classList.toggle('active',!edit);
-  updateEditorPreview(); if (edit) noteEditor.focus(); hideSelection(); closeAnnotationPopover();
+  updateEditorPreview(); if (edit) { state.formattingEditor = 'note'; noteEditor.focus(); } hideSelection(); closeAnnotationPopover();
   $('#reader-hint').textContent = edit ? 'Markdown saves automatically. Switch to Read to highlight or comment.' : 'Select text to highlight, underline, strike, or comment';
+}
+function prepareNoteReading() {
+  const content = $('#note-content'); if (!content || state.active?.kind !== 'note') return;
+  const definitions = getSourceDefinitions(state.active.markdown || '');
+  $$('.md-definition[data-definition]',content).forEach((mark,index) => {
+    const definition = definitions[index]; if (!definition) return;
+    mark.dataset.definitionFrom = definition.from; mark.tabIndex = 0; mark.setAttribute('role','button');
+    mark.title = '⌘/Ctrl-click to view definition';
+    const open = () => openDefinition({kind:'note',editor:noteEditor,host:content,itemId:state.active.id},definition,mark.getBoundingClientRect(),mark.textContent);
+    mark.addEventListener('pointerdown',event => { if (event.ctrlKey || event.metaKey) { event.preventDefault(); event.stopPropagation(); open(); } });
+    mark.addEventListener('keydown',event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
+  });
+  $$('a[href]',content).forEach(link => { link.target = '_blank'; link.rel = 'noopener noreferrer'; });
 }
 function updateEditorPreview() {
   const button = $('#markdown-preview-toggle');
@@ -515,7 +538,7 @@ function makeNotepadPage(saved,pageNumber) {
   return pad;
 }
 function mountNotepadPage(pad) {
-  closeNotepadDefinition();
+  closeDefinition();
   cancelPadLink();
   if (state.notepad && notepadEditor) {
     state.notepad.scrollTop = notepadEditor.view.scrollDOM.scrollTop;
@@ -527,16 +550,13 @@ function mountNotepadPage(pad) {
     if (state.notepad === pad) updateNotepadState();
     clearTimeout(pad.timer); if (!pad.conflict) pad.timer = setTimeout(() => saveNotepad(pad),650);
   },!pad.sourceMode,{ariaLabel:'Document notepad Markdown editor',placeholder:'Capture your thoughts about this document… Use # for a heading.',
-    onPassageLink: jumpToLinkedPassage, onApplyTextColor: applyNotepadTextColor,
-    onDefinition: (definition,rect,label) => openNotepadDefinition(pad,definition,rect,label),
+    onPassageLink: jumpToLinkedPassage, onApplyTextColor: () => applyEditorTextColor('notepad'),
+    onDefinition: (definition,rect,label) => { if (state.notepad === pad) openDefinition(editorContext('notepad'),definition,rect,label); },
     onSelectionChange: (selection,update) => {
       if (state.notepad !== pad) return;
-      const defined = state.definitionTarget;
-      if (defined?.pad === pad && update.docChanged) {
-        defined.from = update.changes.mapPos(defined.from,defined.existing ? -1 : 1);
-        defined.to = update.changes.mapPos(defined.to,-1);
-      }
-      scheduleNotepadDefinition();
+      if (pad.editor?.view.hasFocus) state.formattingEditor = 'notepad';
+      mapDefinitionTarget(pad.editor,update);
+      scheduleDefinition();
       const pending = state.pendingPadLink;
       if (pending && update.docChanged) {
         pending.start = update.changes.mapPos(pending.start,1); pending.end = update.changes.mapPos(pending.end,-1);
@@ -591,7 +611,7 @@ async function ensureNotepad(pageNumber = null) {
 async function switchNotepadPage(number,create = false) {
   if (!state.notepad || state.notepadPageBusy || state.linkingPad || !create && number === state.notepad.pageNumber) return false;
   const pad = state.notepad, id = pad.item_id; state.notepadPageBusy = true;
-  closeNotepadDefinition();
+  closeDefinition();
   cancelPadLink(); pad.editor.setReadOnly(true); updateNotepadState();
   try {
     if (!await flushNotepad()) return false;
@@ -668,12 +688,13 @@ function hidePadSelectionTools() {
   state.padColorMenu = false;
   $('#notepad-selection-toolbar').hidden = true;
   $('#notepad-color-toggle').setAttribute('aria-expanded','false');
+  $('#note-color-toggle').setAttribute('aria-expanded','false');
 }
 function updateNotepadPalette() {
   const label = textColorLabels[notepadTextColor];
   for (const button of $$('[data-notepad-color]')) button.setAttribute('aria-pressed',button.dataset.notepadColor === notepadTextColor);
   for (const button of $$('.notepad-color-control')) button.style.setProperty('--notepad-current-color',`var(--text-color-${notepadTextColor})`);
-  $('#notepad-color-toggle').title = $('#notepad-color-toggle').ariaLabel = `Text color: ${label}`;
+  for (const id of ['notepad-color-toggle','note-color-toggle']) $(`#${id}`).title = $(`#${id}`).ariaLabel = `Text color: ${label}`;
   $('#notepad-apply-color').title = $('#notepad-apply-color').ariaLabel = `Apply ${label.toLowerCase()} text (⌘/Ctrl Shift H)`;
 }
 function setNotepadTextColor(color,remember = true) {
@@ -682,42 +703,69 @@ function setNotepadTextColor(color,remember = true) {
   if (remember) writeLocal('notate-notepad-text-color',color);
   updateNotepadPalette();
 }
-function applyNotepadTextColor() {
-  if (!state.linkingPad && !state.pendingPadLink && notepadEditor?.selectionCanFormat()) notepadEditor.applyTextColor(notepadTextColor);
+function editorContext(kind = state.formattingEditor) {
+  if (kind === 'note') return state.editing && noteEditor ? {kind,editor:noteEditor,host:$('#note-editor'),itemId:state.active.id} : null;
+  return state.notepad && notepadEditor ? {kind:'notepad',editor:notepadEditor,host:$('#notepad-editor'),itemId:state.active.id,pad:state.notepad} : null;
 }
-function closeNotepadDefinition() {
+function definitionIsCurrent(target) {
+  return target && state.active?.id === target.itemId && (target.kind === 'note'
+    ? !state.editing || noteEditor === target.editor
+    : state.notepad === target.pad && !state.notepadPageBusy && !state.linkingPad);
+}
+function mapDefinitionTarget(editor,update) {
+  const target = state.definitionTarget;
+  if (editor && target?.editor === editor && update.docChanged) {
+    target.from = update.changes.mapPos(target.from,target.existing ? -1 : 1);
+    target.to = update.changes.mapPos(target.to,-1);
+  }
+}
+function applyEditorTextColor(kind = state.formattingEditor) {
+  const context = editorContext(kind);
+  if (context && (kind === 'note' || !state.linkingPad && !state.pendingPadLink) && context.editor.selectionCanFormat()) context.editor.applyTextColor(notepadTextColor);
+}
+function closeDefinition() {
   cancelAnimationFrame(state.definitionFrame); state.definitionFrame = null;
   state.definitionTarget = null; definitionEditor?.destroy(); definitionEditor = null;
   $('#notepad-definition-popover').hidden = true;
   $('#notepad-definition-editor').replaceChildren();
 }
-function scheduleNotepadDefinition() {
+function scheduleDefinition() {
   if (!state.definitionTarget) return;
   cancelAnimationFrame(state.definitionFrame);
-  state.definitionFrame = requestAnimationFrame(() => { state.definitionFrame = null; positionNotepadDefinition(); });
+  state.definitionFrame = requestAnimationFrame(() => { state.definitionFrame = null; positionDefinition(); });
 }
-function positionNotepadDefinition() {
+function positionDefinition() {
   const target = state.definitionTarget, popup = $('#notepad-definition-popover');
-  if (!target || popup.hidden || state.notepad !== target.pad) return;
-  const marked = target.existing ? $(`[data-definition-from="${target.from}"]`,$('#notepad-editor')) : null;
-  const rect = marked?.getBoundingClientRect() || target.pad.editor.view.coordsAtPos(Math.min(Math.max(0,target.from),target.pad.editor.view.state.doc.length)) || target.rect || $('#notepad-editor').getBoundingClientRect();
+  if (!definitionIsCurrent(target) || popup.hidden) return;
+  const marked = target.existing ? $(`[data-definition-from="${target.from}"]`,target.host) : null;
+  const rect = marked?.getBoundingClientRect() || target.editor?.view.coordsAtPos(Math.min(Math.max(0,target.from),target.editor.view.state.doc.length)) || target.rect || target.host.getBoundingClientRect();
   const top = rect.top-popup.offsetHeight-8;
   position(popup,rect.left,top >= 8 ? top : rect.bottom+8);
 }
-function editNotepadDefinition() {
-  const target = state.definitionTarget; if (!target) return;
+function editableDefinitionTarget() {
+  let target = state.definitionTarget; if (!definitionIsCurrent(target)) return;
+  if (target.kind === 'note' && !state.editing) {
+    const saved = {...target}; setEditMode(true);
+    state.definitionTarget = target = {...saved,...editorContext('note')};
+    $('#notepad-definition-popover').hidden = false;
+  }
+  return target;
+}
+function editDefinition() {
+  const target = editableDefinitionTarget(); if (!target) return;
   $('#notepad-definition-display').hidden = true; $('#notepad-definition-read-actions').hidden = true;
   $('#notepad-definition-form').hidden = false; $('#notepad-definition-error').hidden = true;
   $('#notepad-definition-heading').textContent = target.existing ? 'Edit definition' : 'Define selection';
   definitionEditor?.destroy(); $('#notepad-definition-editor').replaceChildren();
-  definitionEditor = createNoteEditor($('#notepad-definition-editor'),target.definition || '',scheduleNotepadDefinition,true,
-    {ariaLabel:'Definition text',placeholder:'Write your definition…',maxLength:20_000,onSubmit:saveNotepadDefinition});
-  positionNotepadDefinition(); definitionEditor.focus(); scheduleNotepadDefinition();
+  definitionEditor = createNoteEditor($('#notepad-definition-editor'),target.definition || '',scheduleDefinition,true,
+    {ariaLabel:'Definition text',placeholder:'Write your definition…',maxLength:20_000,onSubmit:saveDefinition});
+  positionDefinition(); definitionEditor.focus(); scheduleDefinition();
 }
-function openNotepadDefinition(pad,definition,rect,label) {
-  if (state.notepad !== pad || state.notepadPageBusy || state.linkingPad) return;
-  closeNotepadDefinition(); hidePadSelectionTools();
-  state.definitionTarget = {...definition,existing:true,pad,rect};
+function openDefinition(context,definition,rect,label) {
+  if (!definitionIsCurrent(context)) return;
+  closeDefinition(); hidePadSelectionTools(); hideSelection(); closeAnnotationPopover();
+  if (context.kind === 'note' && !state.editing) getSelection().removeAllRanges();
+  state.definitionTarget = {...definition,...context,existing:true,rect};
   $('#notepad-definition-term').textContent = label || definition.text;
   $('#notepad-definition-heading').textContent = 'Definition';
   $('#notepad-definition-form').hidden = true; $('#notepad-definition-error').hidden = true;
@@ -726,54 +774,80 @@ function openNotepadDefinition(pad,definition,rect,label) {
   display.innerHTML = renderEditorMarkdown(definition.definition);
   $$('a',display).forEach(link => { link.target = '_blank'; link.rel = 'noopener noreferrer'; });
   const popup = $('#notepad-definition-popover'); popup.hidden = false;
-  positionNotepadDefinition(); popup.focus({preventScroll:true});
+  positionDefinition(); popup.focus({preventScroll:true});
 }
-function beginNotepadDefinition() {
-  const pad = state.notepad;
-  if (!pad || state.notepadPageBusy || state.linkingPad || state.pendingPadLink || !pad.editor.selectionCanDefine()) return;
-  const selected = pad.editor.getSelectedDefinition(); const {from,to} = pad.editor.view.state.selection.main;
+function beginDefinition() {
+  const context = editorContext();
+  if (!definitionIsCurrent(context) || context.kind === 'notepad' && state.pendingPadLink || !context.editor.selectionCanDefine()) return;
+  const editor = context.editor, source = editor.getSource();
+  const selected = editor.getSelectedDefinition(); const {from,to} = editor.view.state.selection.main;
   const selection = getSelection(), rect = selection.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
-  const label = selection.toString().trim() || pad.markdown.slice(from,to);
-  closeNotepadDefinition(); hidePadSelectionTools();
-  state.definitionTarget = selected ? {...selected,existing:true,pad,rect} : {from,to,text:pad.markdown.slice(from,to),existing:false,pad,rect};
+  const label = selection.toString().trim() || source.slice(from,to);
+  closeDefinition(); hidePadSelectionTools();
+  state.definitionTarget = selected ? {...selected,...context,existing:true,rect} : {from,to,text:source.slice(from,to),...context,existing:false,rect};
   $('#notepad-definition-term').textContent = selected ? selected.text : label;
-  $('#notepad-definition-popover').hidden = false; editNotepadDefinition();
+  $('#notepad-definition-popover').hidden = false; editDefinition();
 }
-function saveNotepadDefinition() {
+function saveDefinition() {
   const target = state.definitionTarget, source = definitionEditor?.getSource().trim();
-  if (!target || state.notepad !== target.pad) return;
+  if (!definitionIsCurrent(target)) return;
   const error = $('#notepad-definition-error');
-  if (!source) { error.textContent = 'Write a definition before saving.'; error.hidden = false; scheduleNotepadDefinition(); return; }
-  if (!target.pad.editor.setDefinition(source,target)) {
+  if (!source) { error.textContent = 'Write a definition before saving.'; error.hidden = false; scheduleDefinition(); return; }
+  if (!target.editor.setDefinition(source,target)) {
     error.textContent = 'The marked text or definition changed. Your draft is still here; select the text again to apply it.';
-    error.hidden = false; scheduleNotepadDefinition(); return;
+    error.hidden = false; scheduleDefinition(); return;
   }
-  closeNotepadDefinition(); schedulePadSelectionTools();
+  closeDefinition(); schedulePadSelectionTools();
 }
 function updatePadSelectionTools() {
-  const toolbar = $('#notepad-selection-toolbar'); const editor = notepadEditor;
-  const allowed = !!editor && !state.linkingPad && editor.selectionCanLink() && editor.view.state.selection.main.to - editor.view.state.selection.main.from <= 100_000;
-  $('#notepad-link').disabled = !allowed;
-  $('#link-pad-selection').disabled = !allowed;
-  const canFormat = !!editor && !state.linkingPad && !state.pendingPadLink && editor.selectionCanFormat();
+  const toolbar = $('#notepad-selection-toolbar'), context = editorContext(), editor = context?.editor;
+  const note = context?.kind === 'note', locked = !note && (state.linkingPad || !!state.pendingPadLink);
+  const padCanLink = !!notepadEditor && !state.linkingPad && notepadEditor.selectionCanLink() && notepadEditor.view.state.selection.main.to - notepadEditor.view.state.selection.main.from <= 100_000;
+  $('#notepad-link').disabled = !padCanLink;
+  const hyperlink = note && editor.getHyperlinkTarget();
+  const linkButton = $('#link-pad-selection');
+  linkButton.disabled = note ? !hyperlink : !padCanLink;
+  linkButton.title = linkButton.ariaLabel = note ? (hyperlink?.existing ? 'Edit hyperlink' : 'Add hyperlink to selected text') : 'Link selected Notepad text to a reading passage';
+  $('#editor-link-label').textContent = note ? 'Hyperlink' : 'Link';
+  $('#note-hyperlink').disabled = !state.editing || !noteEditor?.getHyperlinkTarget();
+  const canFormat = !!editor && !locked && editor.selectionCanFormat();
   $('#notepad-underline').disabled = $('#notepad-apply-color').disabled = !canFormat;
   $('#notepad-define').disabled = !canFormat || !editor.selectionCanDefine();
   $('#notepad-define').title = editor?.getSelectedDefinition() ? 'Edit definition for selected text' : 'Define selected text';
   $('#notepad-underline').setAttribute('aria-pressed',canFormat && editor.selectionIsUnderlined());
   const focused = editor?.view.hasFocus || toolbar.contains(document.activeElement);
-  toolbar.hidden = !editor || state.filter !== 'notepad' || !!state.pendingPadLink || !!state.definitionTarget || state.linkingPad || !(state.padColorMenu || canFormat && focused);
-  $('#notepad-color-toggle').disabled = !editor || state.linkingPad || !!state.pendingPadLink;
-  $('#notepad-color-toggle').setAttribute('aria-expanded',!toolbar.hidden);
+  toolbar.setAttribute('aria-label',note ? 'Format selected note text' : 'Format selected Notepad text');
+  toolbar.hidden = !editor || !note && state.filter !== 'notepad' || locked || !!state.definitionTarget || $('#modal').open || !(state.padColorMenu || (canFormat || !!hyperlink) && focused);
+  $('#notepad-color-toggle').disabled = !notepadEditor || state.linkingPad || !!state.pendingPadLink;
+  $('#notepad-color-toggle').setAttribute('aria-expanded',!note && !toolbar.hidden);
+  $('#note-color-toggle').setAttribute('aria-expanded',note && !toolbar.hidden);
+  $('#note-define').disabled = !state.editing || !noteEditor?.selectionCanDefine();
   if (toolbar.hidden) return;
   if (state.padColorMenu) {
-    const anchor = $('#notepad-color-toggle').getBoundingClientRect();
+    const anchor = $(note ? '#note-color-toggle' : '#notepad-color-toggle').getBoundingClientRect();
     position(toolbar,anchor.left,anchor.bottom+8); return;
   }
   const {from,to} = editor.view.state.selection.main; const first = editor.view.coordsAtPos(from), last = editor.view.coordsAtPos(to);
-  const bounds = $('#notepad-editor').getBoundingClientRect();
+  const bounds = (note ? $('#reader') : context.host).getBoundingClientRect();
   if (!first || !last || first.bottom < bounds.top || first.top > bounds.bottom) { hidePadSelectionTools(); return; }
   const above = first.top-toolbar.offsetHeight-8;
   position(toolbar,first.left,above >= Math.max(8,bounds.top) ? above : last.bottom+8);
+}
+function beginNoteHyperlink() {
+  const context = editorContext('note'), target = context?.editor.getHyperlinkTarget();
+  if (!target) return;
+  hidePadSelectionTools(); closeDefinition();
+  const current = () => state.editing && state.active?.id === context.itemId && noteEditor === context.editor;
+  modal(target.existing ? 'Edit hyperlink' : 'Add hyperlink',
+    `<p>${escapeHTML(target.text)}</p><label for="note-link-url">URL</label><input id="note-link-url" name="url" type="url" placeholder="https://example.com" value="${escapeHTML(target.url || '')}" required><p>Use an https://, http://, or mailto: address. ⌘/Ctrl-click the linked text to open it.</p>${target.existing ? '<button type="button" id="note-link-remove" class="button subtle">Remove hyperlink</button>' : ''}`,
+    'Save link', data => {
+      if (!current() || !context.editor.setHyperlink(data.get('url').trim(),target)) throw new Error('Use a valid web or email address. If the selected text changed, select it again.');
+      requestAnimationFrame(() => context.editor.focus());
+    });
+  if (target.existing) $('#note-link-remove').onclick = () => {
+    if (!current() || !context.editor.removeHyperlink(target)) { toast('The linked text changed. Select its current text again.',true); return; }
+    $('#modal').close(); requestAnimationFrame(() => context.editor.focus());
+  };
 }
 function cancelPadLink() {
   state.pendingPadLink = null; $('#pad-link-banner').hidden = true; $('#pad-action-label').textContent = 'Pad';
@@ -1503,7 +1577,7 @@ function renderAnnotations() {
   const pad = state.filter === 'notepad'; list.hidden = pad; $('#document-notepad').hidden = !pad;
   hidePadSelectionTools();
   if (pad) { ensureNotepad(); return; }
-  closeNotepadDefinition();
+  if (state.definitionTarget?.kind === 'notepad') closeDefinition();
   // Reuse live editors during sync so selection, undo, and drafts stay intact.
   const focusId = document.activeElement?.closest('.reply-form')?.dataset.id;
   const ids = new Set(state.annotations.map(record => record.id));
@@ -1577,7 +1651,7 @@ async function synchronizeActive() {
   const current = state.active; const latest = await api(`/api/items/${current.id}`);
   if (state.active?.id !== current.id || latest.revision === current.revision) return;
   if (state.dirty || state.saving) { state.conflict = true; showConflictNotice(); }
-  else { const scroll = $('#reader').scrollTop; state.active = latest; renderHeading(); if (current.kind === 'note') { $('#note-content').innerHTML = latest.content; noteEditor?.setSource(latest.markdown || ''); renderTextMarks(); } $('#reader').scrollTop = scroll; }
+  else { const scroll = $('#reader').scrollTop; state.active = latest; renderHeading(); if (current.kind === 'note') { $('#note-content').innerHTML = latest.content; prepareNoteReading(); noteEditor?.setSource(latest.markdown || ''); renderTextMarks(); } $('#reader').scrollTop = scroll; }
 }
 async function synchronize() {
   await refreshWorkspace();
@@ -1703,45 +1777,57 @@ $('#notepad-color-palette').innerHTML = TEXT_COLORS.map(color => `<button type="
 updateNotepadPalette();
 for (const button of $$('#notepad-selection-toolbar button')) button.onmousedown = event => event.preventDefault();
 $$('[data-notepad-color]').forEach(button => { button.onclick = () => {
-  setNotepadTextColor(button.dataset.notepadColor); applyNotepadTextColor();
-  state.padColorMenu = false; notepadEditor?.focus(); schedulePadSelectionTools();
+  setNotepadTextColor(button.dataset.notepadColor); applyEditorTextColor();
+  state.padColorMenu = false; editorContext()?.editor.focus(); schedulePadSelectionTools();
 }; });
-$('#notepad-color-toggle').onmousedown = event => event.preventDefault();
-$('#notepad-color-toggle').onclick = () => {
-  if (!notepadEditor || state.linkingPad || state.pendingPadLink) return;
-  if (!$('#notepad-selection-toolbar').hidden) hidePadSelectionTools();
-  else { state.padColorMenu = true; updatePadSelectionTools(); }
-};
-$('#notepad-underline').onclick = () => { notepadEditor?.format('underline'); schedulePadSelectionTools(); };
-$('#notepad-apply-color').onclick = applyNotepadTextColor;
-$('#notepad-define').onclick = beginNotepadDefinition;
-$('#notepad-definition-edit').onclick = editNotepadDefinition;
+for (const [id,kind] of [['notepad-color-toggle','notepad'],['note-color-toggle','note']]) {
+  $(`#${id}`).onmousedown = event => event.preventDefault();
+  $(`#${id}`).onclick = () => {
+    const context = editorContext(kind); if (!context || kind === 'notepad' && (state.linkingPad || state.pendingPadLink)) return;
+    const same = state.formattingEditor === kind; state.formattingEditor = kind;
+    if (same && !$('#notepad-selection-toolbar').hidden) hidePadSelectionTools();
+    else { state.padColorMenu = true; updatePadSelectionTools(); }
+  };
+}
+$('#notepad-underline').onclick = () => { editorContext()?.editor.format('underline'); schedulePadSelectionTools(); };
+$('#notepad-apply-color').onclick = () => applyEditorTextColor();
+$('#notepad-define').onclick = beginDefinition;
+$('#note-define').onmousedown = $('#note-hyperlink').onmousedown = event => event.preventDefault();
+$('#note-define').onclick = () => { state.formattingEditor = 'note'; beginDefinition(); };
+$('#note-hyperlink').onclick = beginNoteHyperlink;
+$('#note-download').onclick = action(async () => {
+  if (!state.active || !await flushNote()) return;
+  downloadBlob(new Blob([state.active.markdown],{type:'text/markdown;charset=utf-8'}),`${state.active.title.replace(/[^a-z\d -]/gi,'').slice(0,80) || 'note'}.md`);
+});
+$('#notepad-definition-edit').onclick = editDefinition;
 $('#notepad-definition-remove').onclick = () => {
-  const target = state.definitionTarget;
-  if (!target || state.notepad !== target.pad) return;
-  if (!target.pad.editor.removeDefinition(target)) { toast('The marked text or definition changed. Open its current definition again.',true); return; }
-  closeNotepadDefinition(); schedulePadSelectionTools();
+  const target = editableDefinitionTarget(); if (!target) return;
+  if (!target.editor.removeDefinition(target)) { toast('The marked text or definition changed. Open its current definition again.',true); return; }
+  closeDefinition(); schedulePadSelectionTools();
 };
 for (const id of ['notepad-definition-close','notepad-definition-cancel']) $(`#${id}`).onclick = () => {
-  const pad = state.definitionTarget?.pad; closeNotepadDefinition(); pad?.editor.focus(); schedulePadSelectionTools();
+  const target = state.definitionTarget; closeDefinition();
+  if (target?.kind === 'note' && !state.editing) $('#reader').focus({preventScroll:true}); else target?.editor?.focus();
+  schedulePadSelectionTools();
 };
-$('#notepad-definition-form').onsubmit = event => { event.preventDefault(); saveNotepadDefinition(); };
-new ResizeObserver(scheduleNotepadDefinition).observe($('#notepad-definition-popover'));
+$('#notepad-definition-form').onsubmit = event => { event.preventDefault(); saveDefinition(); };
+new ResizeObserver(scheduleDefinition).observe($('#notepad-definition-popover'));
 $('#notepad-save-state').onclick = action(async () => state.notepad?.conflict ? reviewNotepadConflict() : state.notepad ? saveNotepad() : ensureNotepad());
 $('#notepad-previous-page').onclick = action(() => switchNotepadPage(state.notepad.pageNumber-1));
 $('#notepad-next-page').onclick = action(() => switchNotepadPage(state.notepad.pageNumber+1));
 $('#notepad-add-page').onclick = action(() => switchNotepadPage(null,true));
 $('#notepad-download').onclick = downloadNotepad;
-for (const id of ['notepad-link','link-pad-selection']) {
-  $(`#${id}`).onmousedown = event => event.preventDefault(); $(`#${id}`).onclick = action(beginPadLink);
-}
+$('#notepad-link').onmousedown = $('#link-pad-selection').onmousedown = event => event.preventDefault();
+$('#notepad-link').onclick = action(beginPadLink);
+$('#link-pad-selection').onclick = action(() => state.formattingEditor === 'note' ? beginNoteHyperlink() : beginPadLink());
 $('#cancel-pad-link').onclick = cancelPadLink;
 $('#notepad-editor').addEventListener('focusout',schedulePadSelectionTools);
-$('#notepad-editor').addEventListener('scroll',() => { schedulePadSelectionTools(); scheduleNotepadDefinition(); },true);
+$('#notepad-editor').addEventListener('scroll',() => { schedulePadSelectionTools(); scheduleDefinition(); },true);
 $('#reader').addEventListener('pointerdown',() => $('#reader').classList.add('selecting'));
 $('#reader').addEventListener('pointerup',event => {
   $('#reader').classList.remove('selecting');
   if (event.target.closest('.annotation-mark')) return;
+  if ((event.ctrlKey || event.metaKey) && event.target.closest('[data-definition-from]')) return;
   setTimeout(() => {
     captureSelection();
     if (!getSelection().toString().trim() && !state.editing) {
@@ -1756,15 +1842,15 @@ $('#reader').addEventListener('pointerup',event => {
 $('#reader').addEventListener('keyup',event => { if (event.shiftKey) captureSelection(); });
 let scrollTimer;
 $('#reader').addEventListener('scroll',() => {
-  hideSelection(); schedulePopupPosition(); clearTimeout(scrollTimer); scrollTimer = setTimeout(() => {
+  hideSelection(); schedulePadSelectionTools(); scheduleDefinition(); schedulePopupPosition(); clearTimeout(scrollTimer); scrollTimer = setTimeout(() => {
     if (!state.pdf) return; const top = $('#reader').getBoundingClientRect().top+40;
     const page = $$('.pdf-page').find(element => element.getBoundingClientRect().bottom > top);
     if (page) { state.page = Number(page.dataset.page); $('#current-page').value = state.page; releaseDistantCanvases(); }
   },100);
 },{passive:true});
 document.addEventListener('pointerdown',event => {
-  if (!event.target.closest('#notepad-definition-popover,#notepad-define') && !((event.ctrlKey || event.metaKey) && event.target.closest('#notepad-editor [data-definition-from]'))) closeNotepadDefinition();
-  if (!event.target.closest('#notepad-editor,#notepad-selection-toolbar,#notepad-link,#notepad-color-toggle')) hidePadSelectionTools();
+  if (!event.target.closest('#notepad-definition-popover,#notepad-define,#note-define') && !((event.ctrlKey || event.metaKey) && event.target.closest('[data-definition-from]'))) closeDefinition();
+  if (!event.target.closest('#notepad-editor,#note-editor,#notepad-selection-toolbar,#notepad-link,#notepad-color-toggle,#note-color-toggle,#note-define,#note-hyperlink')) hidePadSelectionTools();
   if (!event.target.closest('#floating-menu,#selection-color,.annotation-menu,.folder-menu,#document-menu')) $('#floating-menu').hidden = true;
   if (!event.target.closest('#selection-toolbar,#comment-popover,#reader')) hideSelection();
   if (!event.target.closest('#sidebar,#sidebar-toggle,#floating-menu,#modal')) closeNavigationDrawer();
@@ -1774,7 +1860,7 @@ document.addEventListener('keydown',event => {
   if (event.key === 'Escape') {
     const dismissing = event.defaultPrevented || $('#modal').open || state.pendingPadLink || layout.drag ||
       $$('#notepad-definition-popover,#notepad-selection-toolbar,#selection-toolbar,#annotation-popover,#comment-popover,#floating-menu').some(node => !node.hidden);
-    closeNotepadDefinition(); hidePadSelectionTools(); cancelPadLink(); hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; closeNavigationDrawer(); finishPaneResize();
+    closeDefinition(); hidePadSelectionTools(); cancelPadLink(); hideSelection(); closeAnnotationPopover(); $('#comment-popover').hidden = true; $('#floating-menu').hidden = true; closeNavigationDrawer(); finishPaneResize();
     if (layout.fullscreen && !dismissing) setWorkspaceFullscreen(false);
   }
   if (!(event.metaKey || event.ctrlKey)) return;
@@ -1786,7 +1872,7 @@ window.addEventListener('beforeunload',event => { if (state.dirty || state.notep
 document.addEventListener('visibilitychange',() => { if (document.hidden) { if (state.dirty) saveNote(); if (state.notepad?.dirty) saveNotepad(); } else if (state.loaded && state.connected) synchronize().catch(() => {}); });
 let mobileNavigation = innerWidth <= 640;
 window.addEventListener('resize',() => {
-  scheduleNotepadDefinition();
+  scheduleDefinition();
   hideSelection();
   if (innerWidth <= 860) finishPaneResize();
   if (mobileNavigation !== (innerWidth <= 640)) { mobileNavigation = innerWidth <= 640; closeNavigationDrawer(); }
@@ -1803,4 +1889,5 @@ document.addEventListener('dragleave',() => { dragDepth = Math.max(0,dragDepth-1
 document.addEventListener('dragover',event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } });
 document.addEventListener('drop',action(async event => { event.preventDefault(); dragDepth = 0; $('#drop-overlay').hidden = true; await importFiles([...event.dataTransfer.files]); }));
 updateNavigationLayout(); updatePaneWidth();
+document.documentElement.dataset.notateReady = 'true';
 boot();
