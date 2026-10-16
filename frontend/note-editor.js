@@ -17,7 +17,7 @@ function decodeDefinition(encoded) {
   catch { return null; }
 }
 const colorDelimiter = {}, underlineDelimiter = {};
-const textFormatting = {
+export const textFormatting = {
   defineNodes: ['TextColor','Underline','DefinedText','TextFormatMark'],
   parseInline: [{name:'NotateTextFormat',before:'HTMLTag',parse(cx,next,pos) {
     if (next !== 60) return -1;
@@ -30,6 +30,10 @@ const textFormatting = {
       : source.startsWith('</u>') ? {type:underlineDelimiter,name:'Underline',length:4} : null;
     if (!closing) return -1;
     const index = cx.findOpeningDelimiter(closing.type); if (index === null) return -1;
+    // A closing tag may only consume the innermost formatting delimiter.
+    // Otherwise takeContent would discard an unclosed tag of the other type.
+    const other = cx.findOpeningDelimiter(closing.type === colorDelimiter ? underlineDelimiter : colorDelimiter);
+    if (other !== null && other > index) return -1;
     const opening = cx.getDelimiterAt(index), content = cx.takeContent(index);
     const name = definitionOpening.test(cx.slice(opening.from,opening.to)) ? 'DefinedText' : closing.name;
     return cx.addElement(cx.elt(name,opening.from,pos+closing.length,[
@@ -70,6 +74,34 @@ renderer.inline.ruler.before('html_inline','notate_text_format',(state,silent) =
 renderer.renderer.rules.notate_format_open = (tokens,index) => tokens[index].tag === 'u' ? '<u>'
   : `<span class="${tokens[index].attrGet('class')}"${tokens[index].attrGet('data-definition') !== null ? ` data-definition="${renderer.utils.escapeHtml(tokens[index].attrGet('data-definition'))}"` : ''}>`;
 renderer.renderer.rules.notate_format_close = (tokens,index) => `</${tokens[index].tag}>`;
+// Raw Markdown can be pasted or edited by hand. Keep invalid custom tags as
+// literal text rather than relying on the browser to repair crossed HTML.
+renderer.core.ruler.after('inline','notate_balanced_formats',state => {
+  for (const block of state.tokens) {
+    if (!block.children) continue;
+    const stack = [], literal = token => {
+      token.content = token.nesting === 1 ? renderer.renderer.rules.notate_format_open([token],0) : `</${token.tag}>`;
+      token.type = 'text'; token.tag = ''; token.nesting = 0;
+    };
+    for (const token of block.children) {
+      if (token.nesting === 1) stack.push(token);
+      else if (token.nesting === -1) {
+        if (token.type === 'notate_format_close' && stack.at(-1)?.tag !== token.tag) { literal(token); continue; }
+        let index = stack.length-1;
+        while (index >= 0 && stack[index].tag !== token.tag) index--;
+        if (index < 0) { if (token.type === 'notate_format_close') literal(token); continue; }
+        // Markdown's own paired tokens must stay intact. Any custom tags
+        // crossing their boundaries are displayed literally instead.
+        while (stack.length-1 > index) {
+          const open = stack.pop();
+          if (open.type === 'notate_format_open') literal(open);
+        }
+        stack.pop();
+      }
+    }
+    for (const token of stack) if (token.type === 'notate_format_open') literal(token);
+  }
+});
 export function renderEditorMarkdown(source) { return renderer.render(source); }
 // Notes' safe reading view has no embedded images. Table previews likewise
 // display image labels without fetching remote assets.
@@ -366,6 +398,96 @@ const livePreview = StateField.define({
   provide: field => EditorView.decorations.from(field)
 });
 
+// Formatting operates on source offsets, while live preview hides delimiters.
+// Keep every new wrapper either inside or outside each existing inline node.
+// When a selection crosses a node's boundary, split the new wrapper into
+// adjacent pieces instead of wrapping only one of that node's delimiters.
+function inlineStructure(state, from, to) {
+  const tree = ensureSyntaxTree(state,to,100);
+  if (!tree) return null; // Never guess boundaries in an unfinished parse.
+  const containers = [], protectedRanges = [];
+  tree.iterate({from,to,enter(node) {
+    const {name} = node, first = node.node.firstChild, last = node.node.lastChild;
+    if (['TextColor','Underline','DefinedText','StrongEmphasis','Emphasis','Strikethrough'].includes(name) && first && last) {
+      containers.push({name,from:node.from,to:node.to,start:first.to,end:last.from});
+    } else if (name === 'Link' || name === 'Image') {
+      let closing = first;
+      while (closing && !(closing.name === 'LinkMark' && state.doc.sliceString(closing.from,closing.to) === ']')) closing = closing.nextSibling;
+      if (first && closing) containers.push({name,from:node.from,to:node.to,start:first.to,end:closing.from});
+      else protectedRanges.push({from:node.from,to:node.to});
+    } else if (['InlineCode','Autolink','HTMLTag','FencedCode','CodeBlock'].includes(name)) {
+      protectedRanges.push({from:node.from,to:node.to}); return false;
+    }
+  }});
+  return {containers,protectedRanges};
+}
+function subtractRanges(from,to,excluded) {
+  const result = []; let start = from;
+  for (const range of excluded.sort((a,b) => a.from-b.from || a.to-b.to)) {
+    if (range.to <= start || range.from >= to) continue;
+    if (range.from > start) result.push({from:start,to:range.from});
+    start = Math.max(start,range.to);
+  }
+  if (start < to) result.push({from:start,to});
+  return result;
+}
+function selectedFormatNode(state,name,from,to,structure) {
+  const excluded = structure.containers.flatMap(node => [{from:node.from,to:node.start},{from:node.end,to:node.to}]);
+  const visible = subtractRanges(from,to,excluded);
+  if (!visible.length) return null;
+  const start = visible[0].from, end = visible.at(-1).to;
+  return structure.containers.filter(node => {
+    if (node.name !== name || node.start > start || node.end < end) return false;
+    const body = subtractRanges(node.start,node.end,excluded);
+    return body.length && body[0].from === start && body.at(-1).to === end;
+  }).at(-1) || null;
+}
+// Also exported for regression tests without a browser. Every toolbar and
+// keyboard formatting action goes through the same boundary checks.
+export function formattingChange(state,name,opening,closing,from = state.selection.main.from,to = state.selection.main.to) {
+  const structure = inlineStructure(state,from,to);
+  if (!structure || from === to) return null;
+  const existing = selectedFormatNode(state,name,from,to,structure);
+  let edits;
+  if (existing) {
+    edits = [{from:existing.from,to:existing.start,insert:name === 'TextColor' ? opening : ''}];
+    if (name !== 'TextColor') edits.push({from:existing.end,to:existing.to,insert:''});
+  } else {
+    edits = [];
+    const first = state.doc.lineAt(from), last = state.doc.lineAt(to);
+    for (let number = first.number; number <= last.number; number++) {
+      const line = state.doc.line(number), prefix = /^[ \t]*(?:(?:#{1,6}|>|[-+*]|\d+[.)])[ \t]+)*/.exec(line.text)[0];
+      const start = Math.max(from,line.from+prefix.length), end = Math.min(to,line.to);
+      if (end <= start) continue;
+      const partial = structure.containers.filter(node => node.from < end && node.to > start && !(start <= node.from && end >= node.to));
+      const excluded = partial.flatMap(node => [{from:node.from,to:node.start},{from:node.end,to:node.to}]);
+      // Code and link destinations are never edited internally. A complete
+      // code span can still be wrapped, retaining its literal contents.
+      excluded.push(...structure.protectedRanges.filter(node => !(start <= node.from && end >= node.to)));
+      for (const range of subtractRanges(start,end,excluded)) {
+        const text = state.doc.sliceString(range.from,range.to);
+        if (!text.trim()) continue;
+        // CommonMark emphasis cannot open or close against whitespace.
+        if (name === 'StrongEmphasis' || name === 'Emphasis') {
+          range.from += /^\s*/.exec(text)[0].length;
+          range.to -= /\s*$/.exec(text)[0].length;
+        }
+        // Fail closed if a future parser extension introduces a boundary the
+        // splitting code did not handle. Never insert into a delimiter or
+        // create an interval crossing an existing container.
+        if (structure.containers.some(node =>
+          node.from < range.from && range.from < node.start || node.end < range.to && range.to < node.to ||
+          node.from < range.from && range.from < node.to && node.to < range.to ||
+          range.from < node.from && node.from < range.to && range.to < node.to)) return null;
+        edits.push({from:range.from,insert:opening},{from:range.to,insert:closing});
+      }
+    }
+  }
+  if (!edits.length) return null;
+  const changes = state.changes(edits);
+  return {changes,selection:EditorSelection.single(changes.mapPos(from,1),changes.mapPos(to,-1))};
+}
+
 export function createNoteEditor(parent, source, onChange, preview = true, options = {}) {
   let suppressChange = false;
   const editing = new Compartment();
@@ -417,6 +539,10 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
   if (!preview) view.dispatch({effects: changePreview.of(false)});
   function wrap(opening, closing = opening) {
     const {from, to} = view.state.selection.main, selected = view.state.doc.sliceString(from, to);
+    const structure = inlineStructure(view.state,from,to);
+    if (!structure || structure.containers.some(node =>
+      from > node.from && from < node.start || to > node.end && to < node.to) ||
+      structure.protectedRanges.some(node => from > node.from && to < node.to)) return;
     const text = selected || ' ';
     const surrounding = view.state.doc.sliceString(Math.max(0, from - opening.length), to + closing.length);
     if (selected && surrounding === opening + selected + closing) {
@@ -435,7 +561,11 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
       if (empty || /^[\t ]+$/.test(view.state.doc.sliceString(from,to))) return wrap('<u>','</u>');
       return styleSelection('Underline','<u>','</u>');
     }
-    if (kind === 'bold' || kind === 'italic') return wrap(kind === 'bold' ? '**' : '*');
+    if (kind === 'bold' || kind === 'italic') {
+      const marker = kind === 'bold' ? '**' : '*';
+      if (view.state.selection.main.empty || /^[\t ]+$/.test(view.state.sliceDoc(view.state.selection.main.from,view.state.selection.main.to))) return wrap(marker);
+      return styleSelection(kind === 'bold' ? 'StrongEmphasis' : 'Emphasis',marker,marker);
+    }
     const {from, to} = view.state.selection.main;
     const first = view.state.doc.lineAt(from), last = view.state.doc.lineAt(to);
     const prefix = kind === 'heading' ? '## ' : kind === 'list' ? '- ' : kind === 'quote' ? '> ' : '';
@@ -510,35 +640,14 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
   }
   function selectionFormatNode(name) {
     const {from,to} = view.state.selection.main;
-    let found = null;
-    syntaxTree(view.state).iterate({from,to,enter(node) {
-      if (node.name === name && node.node.firstChild.to === from && node.node.lastChild.from === to) found = node.node;
-    }});
-    return found;
+    const structure = inlineStructure(view.state,from,to);
+    return structure && selectedFormatNode(view.state,name,from,to,structure);
   }
   function styleSelection(name,opening,closing) {
     if (!selectionCanFormat()) return false;
-    const {from,to} = view.state.selection.main, existing = selectionFormatNode(name);
-    let changes;
-    if (existing) {
-      changes = [{from:existing.firstChild.from,to:existing.firstChild.to,insert:name === 'Underline' ? '' : opening}];
-      if (name === 'Underline') changes.push({from:existing.lastChild.from,to:existing.lastChild.to,insert:''});
-    } else {
-      changes = [];
-      // Wrap each selected line separately, retaining paragraph/list structure
-      // and allowing selections across blank lines to round-trip as Markdown.
-      const first = view.state.doc.lineAt(from), last = view.state.doc.lineAt(to);
-      for (let number = first.number; number <= last.number; number++) {
-        const line = view.state.doc.line(number), prefix = /^[ \t]*(?:(?:#{1,6}|>|[-+*]|\d+[.)])[ \t]+)*/.exec(line.text)[0];
-        const start = Math.max(from,line.from+prefix.length), end = Math.min(to,line.to);
-        if (end <= start || !view.state.doc.sliceString(start,end).trim()) continue;
-        changes.push({from:start,insert:opening},{from:end,insert:closing});
-      }
-    }
-    if (!changes.length) return false;
-    const changeSet = view.state.changes(changes);
-    view.dispatch({changes:changeSet,selection:EditorSelection.single(changeSet.mapPos(from,1),changeSet.mapPos(to,-1)),
-      userEvent:'input',annotations:isolateHistory.of('full')});
+    const change = formattingChange(view.state,name,opening,closing);
+    if (!change) return false;
+    view.dispatch({...change,userEvent:'input',annotations:isolateHistory.of('full')});
     view.focus(); return true;
   }
   function selectionCanDefine() {
@@ -565,8 +674,9 @@ export function createNoteEditor(parent, source, onChange, preview = true, optio
     } else {
       const {from,to,text} = target;
       if (from < 0 || to <= from || to > view.state.doc.length || view.state.doc.sliceString(from,to) !== text) return false;
-      view.dispatch({changes:{from,to,insert:opening+text+'</span>'},selection:EditorSelection.single(from+opening.length,from+opening.length+text.length),
-        userEvent:'input',annotations:isolateHistory.of('full')});
+      const change = formattingChange(view.state,null,opening,'</span>',from,to);
+      if (!change) return false;
+      view.dispatch({...change,userEvent:'input',annotations:isolateHistory.of('full')});
     }
     view.focus(); return true;
   }

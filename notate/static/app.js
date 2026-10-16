@@ -1,4 +1,4 @@
-import {createNoteEditor, getSourcePassageLinks, getSourceDefinitions, renderEditorMarkdown, TEXT_COLORS} from './vendor/note-editor.js?v=b03ac9c681bb2126';
+import {createNoteEditor, getSourcePassageLinks, getSourceDefinitions, renderEditorMarkdown, TEXT_COLORS} from './vendor/note-editor.js?v=353a945f6b1ebbe0';
 
 const $ = (query, root = document) => root.querySelector(query);
 const $$ = (query, root = document) => [...root.querySelectorAll(query)];

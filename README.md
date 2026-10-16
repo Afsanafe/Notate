@@ -131,7 +131,7 @@ python scripts/desktop_smoke.py
 
 The browser smoke check uses an installed Chrome, an isolated temporary workspace, and a temporary server. It exercises live Markdown formatting, tables, undo/redo, Markdown downloads, folders, text annotations, replies, resolution, two-window synchronization, conflicting edits, PDF text selection, zoom, page navigation, persistence, and the mobile layout. Screenshots and results go to `.local-data/artifacts/`. No user workspace is modified.
 
-To change frontend code, install Node.js and run `npm ci`, then run `npm run build:editor` after your edits. The build bundles `frontend/note-editor.js` and versions the app script, editor dependency, and styles by content so reopening an existing workspace loads the matching update. The bundle and dependency license notices are checked in so normal Python installations run offline without Node.js. If the page cannot start, **Reload workspace** retries opening it without resetting saved documents.
+To change frontend code, install Node.js and run `npm ci`, then run `npm run test:editor` to check nested formatting and `npm run build:editor` after your edits. The build bundles `frontend/note-editor.js` and versions the app script, editor dependency, and styles by content so reopening an existing workspace loads the matching update. The bundle and dependency license notices are checked in so normal Python installations run offline without Node.js. If the page cannot start, **Reload workspace** retries opening it without resetting saved documents.
 
 For development without using your normal workspace:
 

@@ -256,6 +256,16 @@ def run():
                 wait_for("document.querySelector('#notepad-editor u .md-text-purple')?.textContent === 'Native colored thought.'")
                 wait_for("document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
                 assert httpx.get(url+f'/api/items/{template_id}/notepad').json()['markdown'] == '<u><span class="md-text-purple">Native colored thought.</span></u>'
+                # Exercise the reverse order too: keep the color, remove
+                # underline, then underline the selected colored text again.
+                window.evaluate_js("document.querySelector('#notepad-underline').click()")
+                wait_for("!document.querySelector('#notepad-editor u') && document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
+                assert httpx.get(url+f'/api/items/{template_id}/notepad').json()['markdown'] == '<span class="md-text-purple">Native colored thought.</span>'
+                window.evaluate_js("document.querySelector('#notepad-editor .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'u',code:'KeyU',metaKey:true,bubbles:true,cancelable:true}))")
+                wait_for("document.querySelector('#notepad-editor .md-text-purple u')?.textContent === 'Native colored thought.' && document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
+                formatted_thought = '<span class="md-text-purple"><u>Native colored thought.</u></span>'
+                assert httpx.get(url+f'/api/items/{template_id}/notepad').json()['markdown'] == formatted_thought
+                results['nested_text_formatting'] = 'passed'
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-editor .md-text-purple')).color") == 'rgb(211, 162, 239)'
                 window.evaluate_js("document.querySelector('#theme-toggle').click(); document.querySelector('[data-theme-choice='+(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')+']').click()")
                 assert window.evaluate_js("getComputedStyle(document.querySelector('#notepad-editor .md-text-purple')).color") == 'rgb(123, 61, 170)'
@@ -267,7 +277,7 @@ def run():
                 wait_for("document.querySelector('#notepad-editor .cm-content').textContent === 'Native second page.' && document.querySelector('#notepad-save-state').textContent === 'Saved locally'")
                 window.evaluate_js("document.querySelector('#notepad-previous-page').click()")
                 wait_for("document.querySelector('#notepad-page-label').textContent === 'Page 1 of 2' && document.querySelector('#notepad-editor .md-text-purple')?.textContent === 'Native colored thought.'")
-                assert httpx.get(url+f'/api/items/{template_id}/notepad').json()['markdown'] == '<u><span class="md-text-purple">Native colored thought.</span></u>'
+                assert httpx.get(url+f'/api/items/{template_id}/notepad').json()['markdown'] == formatted_thought
                 assert httpx.get(url+f'/api/items/{template_id}/notepad?page=2').json()['markdown'] == 'Native second page.'
                 wait_for("!document.querySelector('#notepad-next-page').disabled")
                 window.evaluate_js("document.querySelector('#notepad-next-page').click()")

@@ -8,6 +8,7 @@ import io
 import argparse
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -723,6 +724,41 @@ def check_notepad_text_formatting(page, context, url, modifier):
     editor = page.locator('#notepad-editor .cm-content'); toolbar = page.locator('#notepad-selection-toolbar')
     def replace(value):
         editor.press(modifier+'+a'); page.keyboard.insert_text(value)
+    def select_words(quote):
+        editor.focus()
+        editor.evaluate('''(container, quote) => {
+          const walker = document.createTreeWalker(container,NodeFilter.SHOW_TEXT), nodes = [];
+          let node, text = ''; while (node = walker.nextNode()) { nodes.push({node,start:text.length}); text += node.textContent; }
+          const start = text.indexOf(quote), end = start+quote.length;
+          if (start < 0) throw new Error('Missing selected words: '+quote);
+          const first = nodes.find(item => item.start+item.node.length > start);
+          const last = nodes.find(item => item.start+item.node.length >= end);
+          const range = document.createRange(); range.setStart(first.node,start-first.start); range.setEnd(last.node,end-last.start);
+          getSelection().removeAllRanges(); getSelection().addRange(range);
+        }''',quote)
+        expect(toolbar).to_be_visible()
+    def saved_balanced_source():
+        expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
+        source = page.request.get(f'{url}/api/items/{item_id}/notepad').json()['markdown']
+        stack = []
+        for match in re.finditer(r'<(/?)(span\b[^>]*|u)>',source):
+            tag = 'span' if match[2].startswith('span') else 'u'
+            if match[1]: assert stack and stack.pop() == tag, source
+            else: stack.append(tag)
+        assert not stack, source
+        return source
+    # Color first, then underline: select the actual rendered words again,
+    # including a selection crossing from a colored span into plain text.
+    replace('one two three four.')
+    select_words('two'); page.locator('[data-notepad-color="purple"]').click()
+    select_words('two'); page.locator('#notepad-underline').click()
+    assert '<u>two</u>' in saved_balanced_source()
+    editor.press(modifier+'+u'); assert '<u>' not in saved_balanced_source()
+    select_words('wo three'); editor.press(modifier+'+u')
+    assert editor.locator('u').all_text_contents() == ['wo',' three']
+    saved_balanced_source()
+    editor.press(modifier+'+z'); assert '<u>' not in saved_balanced_source()
+    editor.press(modifier+'+Shift+z' if modifier == 'Meta' else modifier+'+y'); saved_balanced_source()
     # Exact formatting tags also render safely inside live table previews.
     replace('| Color | Detail |\n| --- | --- |\n| <span class="md-text-red">**Bold**</span> | <u>Underlined</u> |\n\n`<span class="md-text-red">literal</span>`\n\n')
     editor.press(modifier+'+End')
@@ -782,11 +818,15 @@ def check_notepad_text_formatting(page, context, url, modifier):
     select_text(page,'#note-content','A source for discoveries.'); page.locator('[data-annotate="pad"]').click()
     link = page.locator('#notepad-editor .md-pad-link'); expect(link).to_have_text('Linked colored thought.')
     expect(toolbar).to_be_visible(); expect(page.locator('#link-pad-selection')).to_be_disabled()
-    page.locator('[data-notepad-color="red"]').click(); expect(link.locator('.md-text-red')).to_have_text('Linked colored thought.')
+    page.locator('[data-notepad-color="red"]').click(); expect(editor.locator('.md-text-red')).to_have_text('Linked colored thought.')
+    # Depending on the order of formatting, color can wrap the link or be
+    # inside it. Both have the same visible result and balanced source.
+    saved_balanced_source()
     link.click(); expect(page.locator('#reader')).to_be_focused(); click_mark(page,'pad')
     expect(editor).to_be_focused(); expect(link).to_have_text('Linked colored thought.')
     expect(page.locator('#notepad-save-state')).to_have_text('Saved locally')
-    expect(other.locator('#notepad-editor .md-pad-link .md-text-red')).to_have_text('Linked colored thought.')
+    expect(other.locator('#notepad-editor .md-text-red')).to_have_text('Linked colored thought.')
+    expect(other.locator('#notepad-editor .md-pad-link')).to_have_text('Linked colored thought.')
     other.close(); page.locator('.file-card').filter(has_text='Welcome to Notate').click()
     print(f'{modifier} Shift H, eight readable text colors, underline, selection popups, tables, undo/redo, saved Markdown, reload, sync, download, and passage links passed.',flush=True)
 

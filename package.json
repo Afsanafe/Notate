@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:editor": "node scripts/build_editor.mjs"
+    "build:editor": "node scripts/build_editor.mjs",
+    "test:editor": "node --test tests/editor_formatting.test.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.8.1",
